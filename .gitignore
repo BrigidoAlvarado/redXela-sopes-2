@@ -1,0 +1,12 @@
+# IDE
+.idea
+
+# Compilación y dependencias locales
+backend/target/
+frontend/node_modules/
+frontend/dist/
+frontend/out-tsc/
+frontend/.angular/
+
+# Registros de herramientas
+*.log
