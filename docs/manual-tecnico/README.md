@@ -88,7 +88,28 @@ Las obligaciones no imponen Spring Boot, Angular, base de datos ni microservicio
 
 El centro necesita un estado compartido que distintos hilos puedan consultar y modificar consistentemente. Se usa un **monolito modular**: una JVM de Spring conecta servicios Java mediante beans, y una aplicación Angular sirve de interfaz. La modularidad separa dominio, motor, recursos, recepción, inventario, planificación, métricas y API sin convertirlos en procesos distribuidos.
 
-<!-- DIAGRAMA: arquitectura -->
+**Arquitectura general**
+
+```mermaid
+flowchart LR
+  usuario["Usuario"] --> ui["Angular: seis vistas"]
+  ui -->|"HTTP REST"| api["Controladores Spring"]
+  pub["PublicadorEstado"] -->|"STOMP: /topic/estado"| ui
+  api --> motor["Motor y reloj"]
+  api --> pedidos["Procesador y planificador"]
+  api --> recepcion["RecepcionService"]
+  api --> conflicto["DemostracionDeadlock"]
+  api --> metricas["MetricasService"]
+  pedidos --> inventario["InventarioService"]
+  pedidos --> recursos["GestorRecursos"]
+  recepcion -->|"mensaje en cola"| inventario
+  recepcion --> recursos
+  conflicto --> pedidos
+  conflicto --> recursos
+  pub --> api
+```
+
+La UI solicita acciones a la API; los servicios de una JVM coordinan pedidos, recursos e inventario. Las flechas son dependencias o intercambio de información, no procesos remotos internos.
 
 La arquitectura coloca todas las decisiones operativas en la JVM. Un navegador no controla la exclusión mutua de otro navegador ni debe convertirse en una segunda fuente de inventario. Las peticiones HTTP pueden llegar a la vez desde distintas vistas o clientes; los servicios coordinan ese acceso.
 
@@ -121,7 +142,26 @@ Son versiones fijadas en el repositorio; no se afirma aquí una auditoría exter
 
 ### Despliegue lógico
 
-<!-- DIAGRAMA: despliegue -->
+**Despliegue lógico de desarrollo**
+
+```mermaid
+flowchart LR
+  subgraph pc["Una computadora posible"]
+    browser["Navegador: aplicación Angular"]
+    node["Node: servidor Angular 127.0.0.1:4200"]
+    subgraph jvm["Una JVM: Spring Boot localhost:8080"]
+      web["HTTP y STOMP"]
+      rec["Hilo de Recepción"]
+      inv["Hilo de Control de Inventario"]
+      q["Cola Java en memoria"]
+      rec --> q --> inv
+    end
+    node -->|"archivos"| browser
+    browser <-->|"HTTP y WebSocket"| web
+  end
+```
+
+Node sirve Angular durante desarrollo; los dos hilos de las áreas comparten la misma JVM y se comunican por una cola en memoria.
 
 Angular se ejecuta en el navegador y Node sirve los archivos durante el desarrollo; el negocio se ejecuta en la JVM de Spring. Ambos servidores pueden estar en una misma computadora. Los hilos de Recepción y Control de Inventario pertenecen a esa misma JVM; no son dos procesos del sistema operativo. La comparación crea instancias Java aisladas dentro del proceso, no contenedores ni JVM adicionales.
 
@@ -171,7 +211,57 @@ Spring reduce código de infraestructura y permite probar servicios sin levantar
 
 El dominio utiliza records inmutables y copias defensivas para evitar cambios concurrentes en una solicitud ya admitida. `PedidoService` almacena pedidos en `ConcurrentHashMap`; `AtomicLong` asigna `secuenciaEntrada`, usada como desempate y no como tiempo. `ClienteService` protege con un mismo monitor sus índices por UUID y correo. Normaliza el correo en minúsculas, exige formato básico y evita duplicados; no verifica buzones ni implementa cuentas autenticadas.
 
-<!-- DIAGRAMA: dominio -->
+**Modelo de dominio simplificado**
+
+```mermaid
+classDiagram
+  class Cliente {
+    UUID id
+    String nombre
+    String correo
+    NivelServicio servicioPreferido
+  }
+  class Pedido {
+    UUID id
+    NivelServicio nivelServicio
+    long secuenciaEntrada
+    unidadesTotales()
+  }
+  class LineaPedido {
+    int cantidad
+    volumenTotal()
+  }
+  class Producto {
+    String id
+    String nombre
+    TipoMercancia tipo
+    int volumenPorUnidad
+  }
+  class PlanTrabajo {
+    UUID pedidoId
+    List pasos
+  }
+  class PasoTrabajo {
+    int posicion
+    EtapaPedido etapa
+    TipoMercancia tipo
+    long unidades
+  }
+  class Ejecucion {
+    long corrida
+    EstadoPedido estado
+    int completados
+  }
+  Cliente "1" <-- "*" Pedido : cliente
+  Pedido "1" *-- "1..*" LineaPedido : contiene
+  LineaPedido "*" --> "1" Producto : solicita
+  Pedido ..> PlanTrabajo : deriva
+  PlanTrabajo "1" *-- "1..*" PasoTrabajo : describe
+  Ejecucion --> Pedido : seguimiento
+  Ejecucion --> PlanTrabajo : conserva
+```
+
+El modelo separa los registros inmutables de la ejecución mutable interna; el diagrama simplifica atributos y omite clases de transporte.
 
 Este UML es un recorte del modelo: separa la descripción `PlanTrabajo` del progreso interno `Ejecucion` de `ProcesadorPedidos`. No representa todos los métodos ni los DTO de HTTP. Un pedido tiene un cliente, un nivel contratado y varias líneas; cada producto tiene su tipo y volumen. El nivel preferido del cliente no obliga al nivel del pedido.
 
@@ -240,7 +330,21 @@ Usar objetos mutables con setters permitiría cambiar una línea mientras se res
 
 Acelerar duraciones sin una referencia común produciría métricas incompatibles: un pedido podría contar tiempo real y otro acelerado, o acumular espera durante una pausa. `MotorSimulacion` centraliza ciclo de vida y puerta de progreso; `RelojSimulado` calcula tiempo monotónico. El estado y la identidad de corrida se leen juntos mediante `estadoCorrida()` para evitar combinar una corrida nueva con un tiempo anterior.
 
-<!-- DIAGRAMA: estados-motor -->
+**Ciclo de vida del motor**
+
+```mermaid
+stateDiagram-v2
+  [*] --> DETENIDA
+  DETENIDA --> EJECUTANDO: iniciar nueva corrida
+  EJECUTANDO --> PAUSADA: pausar
+  PAUSADA --> EJECUTANDO: reanudar
+  EJECUTANDO --> DETENIENDO: detener
+  PAUSADA --> DETENIENDO: detener
+  DETENIENDO --> DETENIDA: ejecutores terminados
+  DETENIENDO --> DETENIENDO: plazo o interrupcion
+```
+
+DETENIENDO permanece mientras no se confirme el cierre; una corrida nueva solo comienza desde DETENIDA.
 
 `DETENIENDO` es una garantía de cierre, no un estado decorativo: impide reiniciar mientras no se confirme la terminación del ejecutor anterior. `detener()` es idempotente desde DETENIDA; iniciar, pausar y reanudar exigen su estado de origen. No se crean dos corridas simultáneas porque las transiciones comparten un `ReentrantLock(true)`.
 
@@ -254,7 +358,27 @@ Al cambiar factor, primero se acumula con la velocidad anterior y después se in
 
 `ContextoTrabajo` queda ligado a una corrida. `avanzar(Runnable)` toma el lock del motor, comprueba estado/corrida/interrupción y confirma un paso corto. Si está pausado, espera con `Condition.await()`. `esperar(Duration)` fija un objetivo simulado y utiliza `awaitNanos(ceil(restante/factor))`; esa espera libera el lock. Pausar, reanudar y cambiar velocidad despiertan la condición; el predicado se verifica en un bucle para tolerar despertares espurios.
 
-<!-- DIAGRAMA: pausa -->
+**Secuencia de pausa y reanudación**
+
+```mermaid
+sequenceDiagram
+  participant U as Controlador
+  participant M as MotorSimulacion
+  participant T as ContextoTrabajo
+  participant R as RelojSimulado
+  U->>M: pausar()
+  M->>R: pausar y acumular
+  M->>M: estado PAUSADA y signalAll
+  M-->>U: pausa confirmada
+  T->>M: avanzar o esperar
+  Note over T,M: Condition.await libera el lock mientras espera
+  U->>M: reanudar()
+  M->>R: nueva referencia real
+  M->>M: estado EJECUTANDO y signalAll
+  M-->>T: reevaluar estado y continuar
+```
+
+La condición libera el lock mientras se espera y revalida el predicado antes de permitir progreso.
 
 El retorno de `pausar()` garantiza que terminó el paso corto que ya tenía la puerta y que otro paso cooperativo no se confirma hasta reanudar. No congela arbitrariamente una instrucción Java. Limpieza de recursos en `finally` puede ocurrir durante cancelación; no es trabajo logístico nuevo. Las operaciones en espera del escenario de deadlock pueden recibir un permiso liberado, pero deben pasar nuevamente por `avanzar` antes de efectuar trabajo.
 
@@ -289,7 +413,28 @@ Un hilo Java es un flujo de ejecución con pila propia que comparte memoria con 
 | Comparación HTTP | `newSingleThreadExecutor()` en `ComparacionesController` | Una comparación activa; crea secuencialmente escenarios aislados |
 | Atención HTTP y broker/publicación | Hilos administrados por Spring/Tomcat | Infraestructura del servidor; no se fija aquí un número global |
 
-<!-- DIAGRAMA: hilos -->
+**Distribución y coordinación de hilos**
+
+```mermaid
+flowchart TB
+  motor["Motor: control y reloj"]
+  cp["Coordinador de pedidos"]
+  prod["Hilo de recepción"]
+  cons["Hilo de inventario"]
+  gen["Hilo generador opcional"]
+  dead["Coordinador de deadlock opcional"]
+  pool["Ejecutor normal: 4 trabajadores por defecto"]
+  cp -->|"envía intentos por paso"| pool
+  prod -->|"envía escaneo"| pool
+  prod -->|"cola de mensajes"| cons
+  gen -->|"admite pedido"| cp
+  dead -->|"envía A y B"| special["Ejecutor de conflicto: hasta 2 trabajadores"]
+  motor -->|"puerta de pausa y corrida"| pool
+  motor -->|"puerta de pausa y corrida"| special
+  motor -->|"reloj simulado"| gen
+```
+
+Los coordinadores esperan señales; solo las tareas admitidas usan los ejecutores. Spring y Tomcat también administran hilos de infraestructura.
 
 El diagrama distingue coordinadores de trabajos físicos. La comparación tiene sus propios servicios y trabajador; no usa el inventario de la corrida principal. No debe interpretarse «cuatro trabajadores» como cuatro hilos totales de toda la aplicación.
 
@@ -311,7 +456,7 @@ No se usan virtual threads: reducirían el costo de un hilo bloqueado, pero no r
 
 `GeneradorPedidos` espera inicialmente 30 s simulados mediante `motor.esperarTiempo`. Después, dentro de `avanzarSiEjecutando(corrida, ...)`, registra un cliente y un pedido y llama a `procesador.procesar`. Recorre cíclicamente cinco niveles; combina un producto principal rotativo con otros mezclados, 1–3 líneas distintas y cantidades aleatorias de 1–20. No tiene semilla reproducible configurada; por eso la comparación usa otro escenario fijo. Un cambio de intervalo se aplica a la siguiente espera iniciada; no reprograma el objetivo ya calculado.
 
-La primera atención depende de recursos y stock, no de que el pedido sea automático. Pausa congela su espera; detención invalida la corrida y lo hace terminar. `detener()` del generador interrumpe su hilo y espera `join`. El cierre del motor confirma sus ejecutores; coordinadores independientes y generador responden a señales/interrupciones con sus propios ciclos de vida.
+La primera atención depende de recursos y stock, no de que el pedido sea automático. Pausa congela una espera aún en curso; detención invalida la corrida y hace terminar al generador. Existe una ventana entre el retorno de `esperarTiempo` y `avanzarSiEjecutando`: si se pausa exactamente allí, la puerta devuelve `false` y `generar` sale del bucle. En ese caso reanudar el motor no reactiva el generador automáticamente; debe iniciarse otra vez. Es un riesgo deducido del código, no un fallo reproducido en esta revisión. `detener()` del generador interrumpe su hilo y espera `join`. El cierre del motor confirma sus ejecutores; coordinadores independientes y generador responden a señales/interrupciones con sus propios ciclos de vida.
 
 **Evidencia:** `EjecutorTrabajos.enviar`, `ProcesadorPedidos.coordinar/despachar/ejecutar`, `RecepcionService.producir`, `GeneradorPedidos.generar`; pruebas `dosTareasEjecutanEnParaleloYSaturacionSeRechazaSinColaOculta`, `esperaPorRecursosSinRetenerTrabajadorYContinuaAlLiberarlos` y `GeneradorPedidosTest`.
 
@@ -330,7 +475,18 @@ Que dos tareas lean «disponible» no implica que ambas puedan usar una estació
 | ESTACION_CALIDAD | Q01–Q04 | 4 |
 | ESCANER | S01 | 1 |
 
-<!-- DIAGRAMA: asignacion -->
+**Asignación de recursos a operaciones**
+
+```mermaid
+flowchart LR
+  P["Paso del pedido P"] -->|"posee"| E["E06: semáforo binario"]
+  P -->|"posee"| B["B01: semáforo binario"]
+  Q["Paso del pedido Q"] -.->|"espera combinación"| E
+  R["Recepción"] -->|"puede poseer"| S["S01: semáforo binario"]
+  D["Despacho"] -.->|"puede esperar"| S
+```
+
+El gestor registra propietarios y solicitudes; una línea de espera no significa que una operación posea el recurso.
 
 El propietario es una operación, como `UUID:indicePaso` o `recepcion:UUID`; no es la identidad del hilo. Los semáforos Java no imponen que quien libera sea el hilo que adquirió. Por eso la disciplina de asignaciones y cierre es parte de la corrección. A diferencia de un `ReentrantLock`, no puede asumirse una comprobación de propiedad de hilo en `release()`.
 
@@ -342,7 +498,22 @@ El propietario es una operación, como `UUID:indicePaso` o `recepcion:UUID`; no 
 4. Si la combinación está completa, registra propietario e inicio de ocupación de cada unidad, retira la espera y devuelve una `Asignacion`.
 5. Al finalizar trabajo o fallar, `Asignacion.close()` bajo el mismo monitor devuelve permisos, acumula ocupación, borra propietario, incrementa `version` y avisa. La bandera `cerrada` vuelve idempotente ese objeto de asignación.
 
-<!-- DIAGRAMA: adquisicion -->
+**Flujo de adquisición ordinaria**
+
+```mermaid
+flowchart TD
+  A["Paso candidato"] --> B["Entrar al monitor del gestor"]
+  B --> C["Intentar permisos con tryAcquire"]
+  C --> D{"Combinación completa"}
+  D -->|"No"| E["Devolver parciales y registrar espera"]
+  E --> F["Trabajador retorna"]
+  D -->|"Sí"| G["Registrar propietarios y devolver asignación"]
+  G --> H["Ejecutar paso con reloj simulado"]
+  H --> I["finally: cerrar asignación"]
+  I --> J["Liberar permisos e informar cambio"]
+```
+
+El intento parcial no sobrevive al fallo; el cierre de la asignación es idempotente.
 
 La atomicidad observable resulta de combinar semáforos reales con el monitor que protege sus metadatos. Los permisos parciales de un intento fallido no se publican como asignación y no permanecen retenidos entre reintentos. `estado()` copia unidades sin adquirirlas. Durante la transferencia del conflicto puede existir unidad reservada para el ganador y aún sin propietario; `disponible=false` expresa que no es utilizable por un trabajo ajeno. `disponibles(tipo)` cuenta permisos, mientras `estado()` también considera esa reserva: no son consultas semánticamente idénticas durante recuperación.
 
@@ -352,7 +523,7 @@ La adquisición completa elimina la condición de **retención y espera** entre 
 
 Un semáforo contador por tipo también limitaría capacidad, pero no diría qué estación concreta está ocupada ni permitiría nombrar C01/S01. Un `boolean ocupado` protegido por monitor bastaría para una simulación básica, pero no demostraría permisos reales. Un orden global de adquisición bloqueante es otra prevención válida; aquí exigiría mantener trabajadores esperando, mientras `tryAcquire` y reencolar conserva capacidad útil. No se implementa algoritmo del banquero ni cálculo general de estados seguros.
 
-**Ejemplo didáctico:** P y Q necesitan una estación de empaque y un encargado. Si E01–E05 ya están ocupadas, P obtiene E06+B01 y trabaja. Q puede intentar tomar B02, pero al no haber E libre su combinación se revierte y B02 queda disponible. Cuando P cierra su asignación se incrementa la versión y Q vuelve a competir. Si había otras E libres, P y Q podrían trabajar a la vez en unidades distintas.
+**Ejemplo didáctico:** P y Q necesitan una estación de empaque y un encargado. Si E01–E05 ya están ocupadas, P obtiene E06+B01 y trabaja. Q intenta primero las estaciones —ese tipo precede a los encargados en el recorrido— y, al no encontrar ninguna libre, retorna sin asignación. Cuando P cierra su asignación se incrementa la versión y Q vuelve a competir. En otro intento, si Q toma una estación libre pero todos los encargados están ocupados, devuelve esa estación antes de retornar. Si había suficientes estaciones y encargados libres, ambos podrían trabajar a la vez en unidades distintas.
 
 La preferencia de planificación no se convierte en justicia FIFO de los semáforos. Con demanda continua puede haber inanición de una combinación difícil de conseguir. No se garantiza plazo máximo solo por usar semáforos.
 
@@ -364,7 +535,27 @@ La preferencia de planificación no se convierte en justicia FIFO de los semáfo
 
 No se planifican hilos del sistema operativo ni una CPU única. Se decide qué pedido pendiente intentará ejecutar su siguiente paso, con varios trabajadores. `PlanificadorPedidos` es una clase de comparadores sobre `Candidato(Pedido, esperaNanos)`; no mantiene cola propia. `ProcesadorPedidos.ejecuciones` sigue siendo la fuente única y su coordinador selecciona con `min(comparador)`.
 
-<!-- DIAGRAMA: seleccion -->
+**Selección y asignación de pedidos**
+
+```mermaid
+flowchart TD
+  A["Aviso al coordinador"] --> B["Leer estado y corrida"]
+  B --> C["Intentar reservas completas según política"]
+  C --> D["Comparar candidatos esperando recursos"]
+  D --> E{"Hay candidato elegible"}
+  E -->|"No"| F["Esperar nuevo aviso"]
+  E -->|"Sí"| G["Marcar enviado e intentar cupo"]
+  G --> H{"Hay trabajador"}
+  H -->|"No"| F
+  H -->|"Sí"| I["Trabajador intenta recursos sin bloquear"]
+  I --> J{"Combinación disponible"}
+  J -->|"No"| K["Registrar versión bloqueada y retornar"]
+  J -->|"Sí"| L["Ejecutar paso y liberar"]
+  K --> D
+  L --> A
+```
+
+La preferencia ordena candidatos, pero la factibilidad depende de stock, cupos y recursos.
 
 La selección distingue preferencia y factibilidad. Antes de seleccionar etapas se intentan reservas completas en el orden de la política, pero se sigue con otros pedidos cuando uno no tiene stock. Después, el intento breve del trabajador comprueba recursos; un fallo deja al pedido pendiente y permite avanzar a otro. `consultarCola()` presenta incluso pedidos sin inventario, aunque no sean elegibles para ejecutar físicamente.
 
@@ -397,7 +588,22 @@ Ejemplo didáctico en un mismo instante de selección, con todos elegibles e int
 | B | EXPRES = 1 | 12 | 2 | 0 min | 1 − 0 = 1 |
 | C | ESTANDAR = 3 | 5 | 3 | 0 min | 3 − 0 = 3 |
 
-<!-- DIAGRAMA: ejemplo-politicas -->
+**Ejemplo de orden por política**
+
+```mermaid
+flowchart LR
+  subgraph p["PRIORIDAD"]
+    p1["B: nivel 1"] --> p2["C: nivel 3"] --> p3["A: nivel 5"]
+  end
+  subgraph a["AGING"]
+    a1["A: efectiva 0"] --> a2["B: efectiva 1"] --> a3["C: efectiva 3"]
+  end
+  subgraph s["SJF"]
+    s1["C: 5 unidades"] --> s2["B: 12 unidades"] --> s3["A: 20 unidades"]
+  end
+```
+
+Los tres órdenes son el cálculo didáctico de la tabla anterior, en una sola instantánea y con todos los candidatos elegibles.
 
 Así PRIORIDAD da B→C→A, AGING da A→B→C y SJF da C→B→A. El gráfico representa preferencia en esa instantánea, no un diagrama de Gantt medido. Con varios trabajadores y recursos distintos pueden empezar varios pasos concurrentemente y el orden físico puede variar.
 
@@ -418,15 +624,81 @@ Así PRIORIDAD da B→C→A, AGING da A→B→C y SJF da C→B→A. El gráfico 
 7. En el punto corto de finalización, un paso RETIRO confirma `inventario.retirar(id,tipo)`. Se acumula tiempo y se incrementa `completados` una vez.
 8. En `finally` cierra asignación, limpia recursos y banderas. Si quedan pasos se reencola; si no, marca COMPLETADO y completa el futuro.
 
-<!-- DIAGRAMA: flujo-pedido -->
+**Flujo completo de un pedido**
 
-<!-- DIAGRAMA: secuencia-pedido -->
+```mermaid
+flowchart TD
+  A["Crear y admitir pedido"] --> B{"Reserva completa posible"}
+  B -->|"No"| C["Esperar inventario sin trabajador"]
+  C -->|"aviso de inventario"| B
+  B -->|"Sí"| D["Esperar planificación y recursos"]
+  D --> E{"Recursos completos"}
+  E -->|"No"| D
+  E -->|"Sí"| F["Ejecutar paso"]
+  F --> G{"Paso RETIRO"}
+  G -->|"Sí"| H["Descontar tipo reservado"]
+  G -->|"No"| I["Confirmar progreso"]
+  H --> I
+  I --> J["Liberar recursos"]
+  J --> K{"Quedan pasos"}
+  K -->|"Sí"| D
+  K -->|"No"| L["COMPLETADO"]
+```
+
+La repetición vuelve a seleccionar la próxima etapa y conserva el checkpoint; los caminos de error se describen en el texto.
+
+**Secuencia de servicios por paso**
+
+```mermaid
+sequenceDiagram
+  participant API as ApiController
+  participant PS as PedidoService
+  participant PP as ProcesadorPedidos
+  participant INV as InventarioService
+  participant M as MotorSimulacion
+  participant GR as GestorRecursos
+  API->>PS: crear pedido validado
+  API->>PP: procesar id
+  PP->>INV: reservar todas las líneas
+  INV-->>PP: reserva completa o espera
+  PP->>M: enviarTrabajo por paso
+  M->>GR: intentarAsignar combinación
+  GR-->>M: asignación o vacío
+  alt recursos completos
+    M->>M: esperar duración simulada
+    opt paso de retiro
+      M->>INV: retirar pedido y tipo
+    end
+    M->>PP: confirmar paso
+    M->>GR: cerrar asignación
+  else sin recursos
+    M-->>PP: retornar y esperar aviso
+  end
+```
+
+La interacción real ejecuta el intento de recursos dentro del trabajo enviado; no existe un servicio adicional de ejecución de pedidos.
 
 El flujo muestra que reservar disminuye disponibilidad y retirar disminuye físico. El retiro ocurre **al terminar su paso**, no en cada cambio de etapa ni al finalizar todo el pedido. La secuencia separa el coordinador del trabajador para explicar dónde se toma la decisión y dónde se ejecuta.
 
 ### Estados reales y progreso
 
-<!-- DIAGRAMA: estados-pedido -->
+**Estados operativos principales de ejecución**
+
+```mermaid
+stateDiagram-v2
+  [*] --> ESPERANDO_INVENTARIO: procesar
+  ESPERANDO_INVENTARIO --> ESPERANDO_RECURSOS: reserva completa
+  ESPERANDO_RECURSOS --> EN_PROCESO: asignación completa
+  EN_PROCESO --> ESPERANDO_RECURSOS: paso completo y quedan pasos
+  EN_PROCESO --> COMPLETADO: último paso completo
+  ESPERANDO_INVENTARIO --> ERROR: detención o fallo
+  ESPERANDO_RECURSOS --> ERROR: detención o fallo
+  EN_PROCESO --> ERROR: interrupción o fallo
+  COMPLETADO --> [*]
+  ERROR --> [*]
+```
+
+Se muestran las transiciones utilizadas normalmente; el enum declara valores adicionales y el conflicto se explica en la sección 14.
 
 El enum `EstadoPedido` incluye CREADO, ESPERANDO_INVENTARIO, EN_COLA, EN_PROCESO, ESPERANDO_RECURSOS, BLOQUEADO_DEADLOCK, RECUPERANDO, COMPLETADO, ERROR y CANCELADO. Sin embargo, el progreso actual usa principalmente ESPERANDO_INVENTARIO, ESPERANDO_RECURSOS, EN_PROCESO, COMPLETADO y ERROR. `EN_COLA` no es una fase adicional obligatoria; `CANCELADO` no tiene comando específico y la detención se registra como ERROR. Durante conflicto, Angular deriva BLOQUEADO_DEADLOCK o RECUPERANDO de `DemostracionDeadlock.Vista`; el procesador conserva espera/ejecución operativa. El diagrama no inventa transiciones para todos los valores declarados.
 
@@ -457,7 +729,20 @@ Ante interrupción o `RuntimeException`, se marca ERROR, se liberan permisos en 
 
 Recepción puede aceptar ingresos más rápido de lo que Inventario puede ubicarlos. Si cada área escribiera las listas internas de la otra, compartirían invariantes y fallos. El patrón **productor-consumidor** desacopla la producción de mensajes de su consumo mediante un canal seguro. En esta implementación ambas responsabilidades están en `RecepcionService`, con dos hilos independientes; el consumidor invoca operaciones públicas de `InventarioService`, sin modificar sus colecciones privadas.
 
-<!-- DIAGRAMA: productor-consumidor -->
+**Productor-consumidor entre áreas**
+
+```mermaid
+flowchart LR
+  U["Usuario o API"] --> R["Recepción: validar y escanear S01"]
+  R -->|"offer mensaje"| Q["ArrayBlockingQueue de 100"]
+  Q -->|"poll bajo puerta del motor"| C["Control de Inventario"]
+  C --> I["InventarioService: almacenar"]
+  I -->|"aviso de disponibilidad"| P["Coordinador de pedidos"]
+  I -->|"sin espacio"| W["Registro pendiente de espacio"]
+  W -->|"reevaluar al liberar espacio"| C
+```
+
+Las flechas representan mensajes y avisos dentro de una JVM; el registro pendiente conserva un ingreso que todavía no cabe.
 
 `IngresoMercaderia(UUID id, String producto, int cantidad)` es el mensaje. La `ArrayBlockingQueue` tiene capacidad 100 en la configuración Spring. Su publicación y extracción proporcionan visibilidad entre hilos; no se necesita serializar el mensaje como si cruzara la red. Un `Semaphore` de aviso despierta al consumidor; el mensaje y su trazabilidad permanecen en cola/registro, no en ese aviso.
 
@@ -471,7 +756,31 @@ Recepción puede aceptar ingresos más rápido de lo que Inventario puede ubicar
 6. El consumidor, dentro de `motor.avanzarSiEjecutando`, extrae con `poll` y marca PENDIENTE_ESPACIO. Después intenta almacenar cada pendiente con la misma puerta de pausa.
 7. Si `almacenar` devuelve true, pasa a ALMACENADA. Si no cabe, conserva mensaje en su registro con motivo Espacio insuficiente; un lote grande no impide intentar otros pendientes pequeños. Al retirar mercancía se despierta al consumidor para reevaluarlos.
 
-<!-- DIAGRAMA: recepcion-secuencia -->
+**Secuencia de recepción**
+
+```mermaid
+sequenceDiagram
+  participant U as Usuario
+  participant R as RecepcionService
+  participant M as Motor
+  participant G as GestorRecursos
+  participant Q as BlockingQueue
+  participant I as InventarioService
+  U->>R: registrar producto y cantidad
+  R-->>U: id aceptado
+  R->>M: enviar trabajo de escaneo
+  M->>G: intentar S01
+  G-->>M: asignación
+  M->>M: esperar un segundo simulado
+  M->>G: liberar S01
+  M->>Q: offer ingreso
+  R->>Q: consumidor hace poll
+  R->>I: almacenar lote completo
+  I-->>R: almacenado o sin espacio
+  R-->>U: estado consultable
+```
+
+La aceptación precede al escaneo y la publicación. El consumidor es otro hilo de RecepcionService, que llama a InventarioService.
 
 La secuencia separa aceptación HTTP, escaneo y confirmación de almacenamiento. Extraer de la cola no implica completar recepción: el registro PENDIENTE_ESPACIO conserva su identidad. El FIFO corresponde al orden de **publicación**, no a una garantía de finalización de todas las solicitudes en orden de llegada; los escaneos y la capacidad pueden cambiar el orden de progreso.
 
@@ -503,7 +812,22 @@ disponible(producto) = físico(producto) − reservado(producto)
 
 `reservar(Pedido)` comprueba todas las líneas y añade un mapa por ID solo si alcanzan todas. Repetir la reserva del mismo pedido es error. No elimina fragmentos ni libera espacio: las unidades aún están físicamente guardadas. `retirar(id,tipo)` al final del paso RETIRO elimina las líneas del tipo correspondiente, reduce fragmentos y volumen y elimina esa parte de la reserva. Un segundo retiro del mismo tipo se rechaza.
 
-<!-- DIAGRAMA: reservas -->
+**Reserva atómica y reactivación**
+
+```mermaid
+flowchart TD
+  A["Pedido admitido"] --> B["Comprobar todas las líneas bajo monitor"]
+  B --> C{"Hay disponibilidad completa"}
+  C -->|"No"| D["Esperar inventario"]
+  D -->|"ingreso o liberación"| B
+  C -->|"Sí"| E["Registrar todas las reservas"]
+  E --> F["Esperar recursos sin descontar físico"]
+  F --> G["Completar paso RETIRO de un tipo"]
+  G --> H["Descontar físico y liberar volumen"]
+  H --> I["Actualizar reserva restante y avisar"]
+```
+
+La comprobación de todas las líneas y su reserva son atómicas; retirar se realiza después por tipo y por paso.
 
 La reserva y la reactivación son pasos distintos: al llegar stock, Inventario avisa; el coordinador vuelve a comprobar pedidos pendientes según la política, y solo los que reservan pasan a esperar recursos. La señal no reserva automáticamente todo para el primer pedido que despierte.
 
@@ -529,7 +853,18 @@ Las consultas y reservas recorren colecciones; el costo aumenta con los registro
 
 El enunciado permite definir capacidad; se adoptaron cinco pasillos, cinco estantes por pasillo y cuatro niveles por estante: **100 ubicaciones de 10 unidades de volumen**, total nominal 1000. No es un dato físico proporcionado por el enunciado. Es un tamaño pequeño que permite demostrar capacidad finita, fragmentación y consultas comprensibles.
 
-<!-- DIAGRAMA: almacen -->
+**Organización del almacén**
+
+```mermaid
+flowchart TD
+  A["Almacén: volumen nominal 1000"] --> P["5 pasillos"]
+  P --> E["5 estantes por pasillo"]
+  E --> N["4 niveles por estante"]
+  N --> U["100 ubicaciones de capacidad 10"]
+  U --> F["Fragmentos: lote, producto y cantidad"]
+```
+
+El total proviene de 5 × 5 × 4 ubicaciones y el volumen por unidad del producto determina cuántos artículos caben.
 
 Los identificadores van de P01-E01-N01 a P05-E05-N04. Cada ubicación conserva volumen ocupado y una lista de `Fragmento(lote,producto,cantidad)`. Un mismo lugar puede contener fragmentos de varios productos o lotes; no hay restricción de exclusividad por SKU. El volumen entero por producto relaciona unidades de stock con espacio.
 
@@ -545,7 +880,18 @@ Si el lote cabe, recorre posiciones en orden pasillo–estante–nivel y almacen
 
 Supóngase que GEN-01 (volumen 1) encuentra huecos de 4, 3 y 5 unidades en P01-E01-N01, P02-E03-N02 y P04-E01-N03, con las posiciones intermedias llenas. Un lote de 12 unidades se distribuye 4+3+5 sin necesidad de contigüidad.
 
-<!-- DIAGRAMA: fragmentos -->
+**Lote en huecos no contiguos**
+
+```mermaid
+flowchart LR
+  L["Lote GEN-01: 12 unidades"] --> A["P01-E01-N01: 4"]
+  L --> B["P02-E03-N02: 3"]
+  L --> C["P04-E01-N03: 5"]
+  A -.->|"posiciones intermedias llenas"| B
+  B -.->|"posiciones intermedias llenas"| C
+```
+
+El ejemplo presupone ocupados los espacios intermedios; First Fit rellena los primeros huecos suficientes en orden.
 
 El diagrama representa un ejemplo de huecos previos, no una medición. First Fit no obliga a repartir entre pasillos: si la primera posición tiene espacio suficiente se utiliza. La distribución no contigua se produce por la ocupación anterior.
 
@@ -575,11 +921,42 @@ El enunciado exige provocar un bloqueo circular auténtico y elegir manualmente 
 4. A anuncia espera por S01 y B por C01. Cada una llama a `adquirirFisicoEsperado`, que hace `Semaphore.acquire()` fuera del monitor del gestor.
 5. A conserva C01 y B S01; ninguna puede adquirir su segundo recurso. No están durmiendo para fingir bloqueo: esperan permisos ausentes.
 
-<!-- DIAGRAMA: grafo-deadlock -->
+**Grafo de asignación y espera circular**
+
+```mermaid
+flowchart LR
+  A["Operación A"] -->|"espera"| S["S01"]
+  S -->|"asignado"| B["Operación B"]
+  B -->|"espera"| C["C01"]
+  C -->|"asignado"| A
+```
+
+Cada unidad representa un permiso; las flechas forman la espera circular A → S01 → B → C01 → A.
 
 En el grafo, recurso→operación representa asignación y operación→recurso representa solicitud pendiente. Como cada unidad tiene un permiso, la vuelta A→S01→B→C01→A impide progreso. El personal adicional existe, pero no es necesario para representar este ciclo y se omite del grafo.
 
-<!-- DIAGRAMA: provocar-deadlock -->
+**Secuencia de provocación del deadlock**
+
+```mermaid
+sequenceDiagram
+  participant A as Operación A
+  participant G as GestorRecursos
+  participant L as CountDownLatch 2
+  participant B as Operación B
+  A->>G: intentar C01 y personal
+  G-->>A: C01 asignado
+  B->>G: intentar S01 y personal
+  G-->>B: S01 asignado
+  A->>L: countDown y await
+  B->>L: countDown y await
+  L-->>A: ambos primeros adquiridos
+  L-->>B: ambos primeros adquiridos
+  A->>G: anunciar espera S01 y acquire
+  B->>G: anunciar espera C01 y acquire
+  Note over A,B: Cada operación bloquea esperando el permiso de la otra
+```
+
+El latch coordina los primeros permisos; los acquire posteriores son esperas reales de semáforos.
 
 La secuencia usa el latch para que el orden de inicio de los hilos no determine el resultado: ambos primeros recursos deben estar retenidos antes de solicitar el segundo. No se usa `Thread.sleep()` para producir el conflicto. Si los primeros recursos están ocupados por trabajo ordinario, las tareas esperan avisos de disponibilidad; no se cancela arbitrariamente a sus propietarios.
 
@@ -610,7 +987,35 @@ Este es un detector específico de dos operaciones, no un algoritmo general de b
 6. A confirma el latch de finalización y su `finally` libera C01, S01 y personal. B puede volver a la selección ordinaria mediante `devolverDespachoConflicto`; la demostración marca RESUELTA. Puede existir un breve solapamiento entre esa notificación y la limpieza final de A, por lo que B aún compite por recursos reales.
 7. B retoma su despacho pendiente con adquisición completa y puede completar. Sus retiros y empaques anteriores no se repiten: el índice sigue en despacho y `retirar` solo se llama en pasos RETIRO.
 
-<!-- DIAGRAMA: recuperar-deadlock -->
+**Detección y recuperación con A ganadora**
+
+```mermaid
+sequenceDiagram
+  actor U as Usuario
+  participant D as DemostracionDeadlock
+  participant G as GestorRecursos
+  participant A as Operación A
+  participant B as Operación B
+  D->>G: foto de propietarios y esperas
+  G-->>D: A tiene C01 y espera S01, B inverso
+  D-->>U: deadlock detectado
+  U->>D: resolver seleccionando A
+  D->>G: reservar S01 para A
+  D->>B: interrumpir espera
+  B->>G: liberar S01 y personal propios
+  B->>B: esperar latches fuera del lock del motor
+  G-->>A: acquire S01 completa
+  A->>A: ejecutar y confirmar despacho
+  A-->>B: señalar ganadorTerminado
+  par Limpieza del ganador
+    A->>G: liberar asignaciones en finally
+  and Reencolado de la víctima
+    B->>B: volver a selección ordinaria
+  end
+  D-->>U: estado RESUELTA
+```
+
+RESUELTA indica que se devolvió el perdedor al flujo; su pedido aún puede estar esperando recursos.
 
 La secuencia destaca la transferencia reservada al ganador y la ubicación de las esperas. Esperar un latch mientras se conserva el lock del motor impediría que el ganador entrara a confirmar progreso: la recuperación introduciría otro bloqueo. Aquí las esperas largas están fuera de esa puerta. Si se elige B, los papeles se invierten: A libera C01 y B lo adquiere.
 
@@ -630,7 +1035,21 @@ La prevención ordinaria sigue intacta: `intentarAsignar` no conserva parciales.
 
 Contar pedidos creados como si hubieran sido procesados confundiría carga registrada con trabajo atendido. `MetricasService.resumenActual()` consulta solo ejecuciones admitidas de la corrida actual. Solicita una copia breve de tiempos y estados mediante el motor; después calcula promedios fuera del lock. No mantiene un hilo que incremente estadísticas ni un historial ilimitado de eventos.
 
-<!-- DIAGRAMA: metricas -->
+**Recopilación de métricas**
+
+```mermaid
+flowchart LR
+  U["Consulta o publicador"] --> M["MetricasService.resumenActual"]
+  M --> R["Foto del reloj y corrida"]
+  M --> P["Copia de estados y tiempos de pedidos"]
+  M --> G["Foto de ocupación por unidad"]
+  R --> C["Calcular promedios y porcentajes"]
+  P --> C
+  G --> C
+  C --> V["Resumen de la corrida"]
+```
+
+Se copian los datos protegidos y luego se agregan; no se conserva un historial de eventos para obtener cada promedio.
 
 El gestor registra ocupación al adquirir/liberar, no mediante muestras periódicas que podrían perder asignaciones cortas. El publicador WebSocket sí solicita métricas periódicamente para presentar datos; eso no cambia que el cálculo del servicio sea bajo demanda. Las instantáneas son seguras por módulo, pero no una transacción global de todos los servicios: algunas liberaciones en `finally` pueden ocurrir entre las copias.
 
@@ -677,7 +1096,20 @@ El objetivo Exprés de 30 segundos es una elección del proyecto para concretar 
 | 5 | ESTANDAR | FRA-01 | 2 |
 | 6 | ECONOMICO | GEN-01 | 1 |
 
-<!-- DIAGRAMA: comparacion -->
+**Comparación de políticas con carga equivalente**
+
+```mermaid
+flowchart LR
+  S["Lista fija de seis pedidos y stock fijo"] --> P["Instancia aislada PRIORIDAD"]
+  S --> A["Instancia aislada AGING"]
+  S --> J["Instancia aislada SJF"]
+  P --> R["Resultados por indicador"]
+  A --> R
+  J --> R
+  R --> V["Comparación sin ganador absoluto"]
+```
+
+Las instancias se ejecutan secuencialmente y no comparten inventario ni motor de la simulación principal.
 
 Un latch mantiene ocupado el único trabajador mientras se admite toda la lista; se libera después y comienza la observación solicitada. El reloj ya había comenzado al preparar la carga: el tiempo observado en métricas incluye ese breve intervalo. Al final se pausa, toma resumen y cierra las instancias. No se construye un segundo algoritmo de simulación: se reutilizan las mismas clases.
 
@@ -695,7 +1127,26 @@ Calcular en la consulta evita un hilo de monitoreo y datos agregados que podría
 
 Una interfaz necesita solicitar operaciones, conocer su resultado y consultar el estado sin acceder a semáforos, hilos o mapas internos. `ApiController` agrupa operaciones del dominio; `ComparacionesController` gestiona comparaciones asíncronas. `ContratosApi` define solicitudes y vistas mediante records Java; `ErroresApi` centraliza la traducción de excepciones. Las reglas siguen en los servicios.
 
-<!-- DIAGRAMA: rest -->
+**Secuencia de una operación REST**
+
+```mermaid
+sequenceDiagram
+  actor U as Usuario
+  participant V as PedidosPage
+  participant A as ApiService
+  participant C as ApiController
+  participant S as Servicios de dominio
+  U->>V: registrar pedido
+  V->>A: ejecutar POST
+  A->>C: JSON por HTTP
+  C->>S: validar, crear y admitir
+  S-->>C: progreso o excepción
+  C-->>A: respuesta o error HTTP
+  A-->>V: actualizar resultado y aviso
+  V-->>U: presentar estado
+```
+
+HTTP comunica una acción y su respuesta; la ejecución física posterior sigue siendo asíncrona.
 
 La secuencia muestra una creación de pedido: la respuesta exitosa sigue a la validación y admisión. No describe una transacción distribuida. Si falla antes de la admisión, el controlador descarta el pedido recién creado; si la ejecución ya está admitida, conserva el identificador en el error.
 
@@ -742,7 +1193,25 @@ Una solicitud válida recibe una vista con pedido y progreso; el UUID del ejempl
 
 ### Publicación STOMP
 
-<!-- DIAGRAMA: websocket -->
+**Publicación de una instantánea STOMP**
+
+```mermaid
+sequenceDiagram
+  participant P as PublicadorEstado
+  participant A as ApiController y servicios
+  participant B as Broker simple Spring
+  participant W as WebsocketService
+  participant E as EstadoService
+  P->>A: consultar simulación, métricas y recursos
+  A-->>P: vistas de estado
+  P->>B: enviar snapshot a topic estado
+  B-->>W: mensaje STOMP por WebSocket
+  W->>W: actualizar signal snapshot
+  W-->>E: signal observada
+  E->>E: actualizar simulación y recursos
+```
+
+Un único publicador envía vistas aproximadamente cada segundo real; el cliente puede reconectar y recuperar estado.
 
 `PublicadorEstado.publicar` usa `@Scheduled(fixedDelay=1000)` y `SimpMessagingTemplate` para enviar a `/topic/estado` una vista con simulación, conteos, recursos y deadlock. El endpoint de conexión es `/ws`. Las vistas detalladas siguen consultándose por REST. Si publicar falla se registra una advertencia; no se detiene el motor. La construcción del snapshot llama a servicios por separado y no debe entenderse como una transacción atómica global entre todos ellos.
 
@@ -758,7 +1227,20 @@ Los DTOs desacoplan nombres y unidades públicas de estructuras de sincronizaci�
 
 `bootstrapApplication` inicia `App` standalone con `provideHttpClient` y `provideRouter`. `app.routes.ts` conecta `DashboardPage`, `PedidosPage`, `InventarioPage`, `RecursosPage`, `PlanificacionPage` y `DeadlockPage`. Sus plantillas presentan estados y acciones; no toman decisiones de sincronización ni calculan el plan operativo.
 
-<!-- DIAGRAMA: angular -->
+**Comunicación de Angular y backend**
+
+```mermaid
+flowchart LR
+  V["Páginas standalone"] -->|"acciones y consultas"| API["ApiService"]
+  API -->|"HTTP JSON"| B["Spring Boot"]
+  B -->|"STOMP snapshot"| W["WebsocketService"]
+  W -->|"signal snapshot"| E["EstadoService"]
+  E -->|"signals"| V
+  E -->|"REST de respaldo si desconectado"| API
+  R["Router Angular"] --> V
+```
+
+El estado compartido alimenta las vistas; el backend permanece como fuente de planificación, recursos e inventario.
 
 `ApiService`, provisto en raíz, centraliza `BACKEND = http://localhost:8080`, GET/POST/PUT, timeout de diez segundos, mensajes y una señal de operaciones en curso para evitar duplicados por clave. Un timeout no prueba que el servidor no haya completado la acción; el mensaje recomienda consultar antes de reintentar.
 
@@ -852,6 +1334,7 @@ La fragmentación no contigua está probada en backend, pero no se afirma una co
 | Comparación | Seis pedidos fijos, un trabajador y mismo stock por política; resultados variables, no extrapolables a toda carga. |
 | Métricas | Promedios finales sobre completados; fotos seguras por componente pero no transacción global entre todos los servicios. |
 | Recepciones | Aceptación sin pérdida mientras viva el proceso; registros históricos no se purgan y no son durables. |
+| Pausa del generador en una ventana de carrera | Si `esperarTiempo` retorna justo antes de pausar y la puerta de progreso observa PAUSADA, el bucle del generador termina. La prueba existente cubre pausa durante la espera, no fuerza esta ventana; es un riesgo identificado por lectura y no reproducido aquí. |
 | API e interfaz | CORS local y sin autenticación; snapshots pueden perderse en desconexión y vistas detalladas se actualizan periódicamente. |
 | Ingreso manual «en cualquier momento» | El formulario y API exigen motor ejecutándose; durante pausa o detención rechazan la operación. Es una restricción de la implementación frente a una lectura literal irrestricta del enunciado. |
 | Enunciado y documentos históricos eliminados de `main` | Se consultaron en Git; el README principal actual contiene enlaces rotos a esos archivos. Restaurarlos o corregirlos requiere otra tarea fuera de esta rama. |
