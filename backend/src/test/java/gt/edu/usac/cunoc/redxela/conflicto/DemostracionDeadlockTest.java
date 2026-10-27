@@ -98,6 +98,51 @@ class DemostracionDeadlockTest {
         } finally { recursos.retirarAvisos(aviso); }
     }
 
+    @Test void detenerDuranteRecuperacionInterrumpeAmbasTareasSinRetenerRecursos() throws Exception {
+        recursos.registrarAvisos(aviso);
+        try (var motor = new MotorSimulacion(2, 1_000_000);
+             var procesador = new ProcesadorPedidos(pedidos, motor, recursos, inventario);
+             var demostracion = new DemostracionDeadlock(motor, procesador, recursos)) {
+            procesador.registrarAvisos(aviso); motor.iniciar();
+            var a = pedido(); var b = pedido();
+            var fa = procesador.procesar(a.id()); var fb = procesador.procesar(b.id());
+            demostracion.iniciar(a.id(), b.id());
+            assertTrue(inventario.almacenar(UUID.randomUUID(), "GEN-01", 2));
+            esperar(() -> demostracion.consultar().deadlock());
+            motor.cambiarVelocidad(0.01);
+            demostracion.resolver(a.id());
+            esperar(() -> procesador.consultar(b.id()).estado() == EstadoPedido.ESPERANDO_RECURSOS);
+            assertEquals(DemostracionDeadlock.Estado.RECUPERANDO, demostracion.consultar().estado());
+            motor.detener();
+            assertThrows(ExecutionException.class, () -> fa.get(10, TimeUnit.SECONDS));
+            assertThrows(ExecutionException.class, () -> fb.get(10, TimeUnit.SECONDS));
+            esperar(() -> java.util.Arrays.stream(TipoRecurso.values())
+                    .allMatch(tipo -> tipo.capacidad() == recursos.disponibles(tipo)));
+        } finally { recursos.retirarAvisos(aviso); }
+    }
+
+    @Test void cancelarDemostracionDuranteRecuperacionInterrumpeSinDejarPermisos() throws Exception {
+        recursos.registrarAvisos(aviso);
+        try (var motor = new MotorSimulacion(2, 1_000_000);
+             var procesador = new ProcesadorPedidos(pedidos, motor, recursos, inventario);
+             var demostracion = new DemostracionDeadlock(motor, procesador, recursos)) {
+            procesador.registrarAvisos(aviso); motor.iniciar();
+            var a = pedido(); var b = pedido();
+            var fa = procesador.procesar(a.id()); var fb = procesador.procesar(b.id());
+            demostracion.iniciar(a.id(), b.id());
+            assertTrue(inventario.almacenar(UUID.randomUUID(), "GEN-01", 2));
+            esperar(() -> demostracion.consultar().deadlock());
+            motor.cambiarVelocidad(0.01);
+            demostracion.resolver(b.id());
+            esperar(() -> procesador.consultar(a.id()).estado() == EstadoPedido.ESPERANDO_RECURSOS);
+            demostracion.close();
+            assertThrows(ExecutionException.class, () -> fa.get(10, TimeUnit.SECONDS));
+            assertThrows(ExecutionException.class, () -> fb.get(10, TimeUnit.SECONDS));
+            esperar(() -> java.util.Arrays.stream(TipoRecurso.values())
+                    .allMatch(tipo -> tipo.capacidad() == recursos.disponibles(tipo)));
+        } finally { recursos.retirarAvisos(aviso); }
+    }
+
     private void esperar(BooleanSupplier condicion) throws Exception {
         long limite = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
         while (!condicion.getAsBoolean()) {

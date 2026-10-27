@@ -14,7 +14,7 @@ F5 incorpora inventario en memoria inicialmente vacío, reservas atómicas, reti
 
 F6 agrega generación automática de pedidos con el reloj simulado y una demostración de deadlock real y controlada entre dos despachos. La demostración conserva C01 y S01 mediante semáforos reales, detecta la espera circular y requiere seleccionar manualmente la operación que continúa.
 
-Angular contiene únicamente la aplicación raíz standalone. Aún no hay API de negocio, formularios operativos, generación automática ni deadlock ejecutable.
+Angular contiene únicamente la aplicación raíz standalone. Aún no hay API de negocio ni formularios operativos; la generación automática y la demostración de deadlock ejecutable se controlan por servicios Java y pruebas hasta las fases de API e interfaz.
 
 ## Requisitos
 

@@ -143,18 +143,15 @@ public final class DemostracionDeadlock implements AutoCloseable {
             synchronized (this) { victima = ganador != null && !pedido.equals(ganador) && estado == Estado.RECUPERANDO; }
             if (victima) {
                 try {
-                    // Solo la víctima libera su propio permiso; la pausa bloquea este avance.
+                    // Solo la víctima libera sus permisos. Este paso corto no espera bajo el lock del motor.
                     contexto.avanzar(() -> {
                         if (propio[0] != null) { propio[0].close(); propio[0] = null; }
                         if (personal[0] != null) { personal[0].close(); personal[0] = null; }
-                        // La pausa espera esta transferencia corta: el ganador ya estaba bloqueado en acquire.
-                        try { adquiridoGanador.await(); }
-                        catch (InterruptedException interrumpido) {
-                            Thread.currentThread().interrupt();
-                            throw new IllegalStateException("Transferencia interrumpida", interrumpido);
-                        }
                         procesador.esperarDespachoConflicto(pedido, motor.tiempoActual());
                     });
+                    // El ganador estaba bloqueado en el semáforo; la reserva impide que otro se adelante.
+                    // Esta espera sucede fuera de ContextoTrabajo.avanzar y, por tanto, fuera del lock del motor.
+                    adquiridoGanador.await();
                     ganadorTerminado.await();
                     contexto.avanzar(() -> procesador.devolverDespachoConflicto(pedido, motor.tiempoActual()));
                     synchronized (this) { estado = Estado.RESUELTA; }
