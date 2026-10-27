@@ -4,7 +4,7 @@ Proyecto final de Sistemas Operativos 2, CUNOC, segundo semestre de 2026.
 
 El [enunciado](docs/Proyecto_Final_Sistemas_Operativos_2.md) es la fuente principal de requisitos. La [propuesta de arquitectura](PROPUESTA_ARQUITECTURA.md) define el diseño aprobado.
 
-## Estado actual: F8
+## Estado actual: F9
 
 Implementados el arranque Spring Boot y Angular, el catálogo fijo de diez productos, los cinco tipos de mercancía, niveles de servicio, modelos de cliente/pedido, validaciones, creación y consulta en memoria, y rutas descriptivas por etapa.
 
@@ -18,7 +18,7 @@ F7 incorpora métricas de pedidos, niveles de servicio y ocupación de recursos 
 
 F8 expone una API REST bajo `/api` y snapshots mediante STOMP/WebSocket en `/ws`, canal `/topic/estado`.
 
-Angular contiene únicamente la aplicación raíz standalone y todavía no tiene formularios operativos.
+F9 incorpora una interfaz Angular para controlar la simulación, registrar clientes, pedidos y recepciones, observar recursos, cambiar políticas, consultar métricas y resolver el deadlock real.
 
 ## Requisitos
 
@@ -54,12 +54,12 @@ npm run build
 npm start
 ```
 
-Si se utiliza nvm, `nvm install` y `nvm use` leen `.nvmrc`. La aplicación de desarrollo utiliza `http://127.0.0.1:4200`. No hay peticiones al motor desde Angular en F2.
+Si se utiliza nvm, `nvm install` y `nvm use` leen `.nvmrc`. La aplicación de desarrollo utiliza `http://127.0.0.1:4200` y se conecta al backend en `http://localhost:8080`.
 
 ## Motor de simulación
 
 La configuración inicial en `backend/src/main/resources/application.yml` es de cuatro trabajadores y un factor de 60: un segundo real equivale a 60 segundos simulados. Ambos valores pueden modificarse antes de arrancar Spring; la velocidad también puede cambiarse a través del servicio Java durante una corrida.
 
-Los servicios se pueden controlar mediante REST; todavía no hay interfaz gráfica operativa. El [manual técnico de F8](docs/manual-tecnico/F8.md) documenta endpoints, JSON, WebSocket y ejemplos. Los manuales de [F7](docs/manual-tecnico/F7.md), [F6](docs/manual-tecnico/F6.md), [F5](docs/manual-tecnico/F5.md), [F4](docs/manual-tecnico/F4.md), [F3](docs/manual-tecnico/F3.md), [F2](docs/manual-tecnico/F2.md) y [F1](docs/manual-tecnico/F1.md) detallan las fases anteriores.
+El [manual técnico de F9](docs/manual-tecnico/F9.md) explica la interfaz y su ejecución. El [manual de F8](docs/manual-tecnico/F8.md) documenta endpoints, JSON y WebSocket. Los manuales de [F7](docs/manual-tecnico/F7.md), [F6](docs/manual-tecnico/F6.md), [F5](docs/manual-tecnico/F5.md), [F4](docs/manual-tecnico/F4.md), [F3](docs/manual-tecnico/F3.md), [F2](docs/manual-tecnico/F2.md) y [F1](docs/manual-tecnico/F1.md) detallan las fases anteriores.
 
-La implementación se detiene en F8 hasta su revisión.
+La implementación se detiene en F9 hasta su revisión.
