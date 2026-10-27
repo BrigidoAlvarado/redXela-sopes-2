@@ -145,7 +145,7 @@ public final class GestorRecursos {
 
     public synchronized List<EstadoUnidad> estado() {
         return unidades.values().stream().flatMap(List::stream)
-                .map(u -> new EstadoUnidad(u.id, u.tipo, u.propietario)).toList();
+                .map(u -> new EstadoUnidad(u.id, u.tipo, u.propietario, u.permiso.availablePermits() == 1 && u.reservadoPara == null)).toList();
     }
 
     public synchronized int disponibles(TipoRecurso tipo) {
@@ -153,7 +153,7 @@ public final class GestorRecursos {
                 .filter(u -> u.permiso.availablePermits() == 1).count();
     }
 
-    public record EstadoUnidad(String id, TipoRecurso tipo, String propietario) { }
+    public record EstadoUnidad(String id, TipoRecurso tipo, String propietario, boolean disponible) { }
 
     private RelojSimulado.Foto actualizarReloj() {
         var foto = reloj.get();
