@@ -2,9 +2,12 @@
 
 ## Manual de Usuario
 
-**Proyecto final de Sistemas Operativos 2**  
-Centro Universitario de Occidente  
-Universidad de San Carlos de Guatemala  
+**Proyecto final de Sistemas Operativos 2**
+
+Centro Universitario de Occidente
+
+Universidad de San Carlos de Guatemala
+
 **Versión:** 1.0 · **Fecha:** 27 de octubre de 2026
 
 ---
@@ -238,7 +241,7 @@ La demostración utiliza dos pedidos distintos que contengan **únicamente merca
 
 ![Conflicto resuelto con ganador seleccionado](imagenes/19-deadlock-resuelto.png)
 
-**Resultado:** la pantalla confirma `RESUELTA` e identifica el pedido elegido. El estado intermedio puede ser demasiado breve para observarse.
+**Resultado:** la pantalla confirma `RESUELTA` e identifica el pedido elegido. Durante la captura de esta ejecución, `RECUPERANDO` fue demasiado breve para obtener una imagen; la confirmación mostrada corresponde al estado final informado por el sistema.
 
 8. Abra **Pedidos** y revise que ambos continúen y puedan completarse. En **Recursos**, compruebe que C01 y S01 se liberen al concluir las operaciones.
 
