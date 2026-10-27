@@ -52,4 +52,9 @@ public final class PedidoService {
     public List<Pedido> listar() {
         return pedidos.values().stream().sorted(Comparator.comparingLong(Pedido::secuenciaEntrada)).toList();
     }
+
+    /** Descarta únicamente el objeto recién creado cuando no pudo admitirse. */
+    public void descartarNoAdmitido(Pedido pedido) {
+        pedidos.remove(pedido.id(), pedido);
+    }
 }

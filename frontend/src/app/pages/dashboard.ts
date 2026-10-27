@@ -1,4 +1,4 @@
-import { Component, inject, signal } from '@angular/core';
+import { Component, effect, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { ApiService } from '../core/api.service';
@@ -12,9 +12,22 @@ export class DashboardPage extends Actualizacion {
   readonly metricas = signal<Metricas | null>(null); readonly pedidos = signal<PedidoVista[]>([]);
   readonly tiempo = tiempo; readonly corto = corto;
   factor = 60;
+  factorModificado = false;
+  private factorInicializado = false;
+  constructor() {
+    super();
+    effect(() => {
+      const simulacion = this.estado.simulacion();
+      if (simulacion && !this.factorInicializado) {
+        if (!this.factorModificado) this.factor = simulacion.factorTemporal;
+        this.factorInicializado = true;
+      }
+    });
+  }
+  todosRecursosLibres(): boolean { return this.estado.recursos().length > 0 && this.estado.recursos().every(r => r.disponible); }
   protected async cargar(): Promise<void> {
-    try { const [m, p] = await Promise.all([this.api.get<Metricas>('/metricas'), this.api.get<PedidoVista[]>('/pedidos')]); this.metricas.set(m); this.pedidos.set(p.slice(-6).reverse()); }
-    catch (e) { this.api.error.set(this.api.mensaje(e)); }
+    try { const [m, p] = await Promise.all([this.api.get<Metricas>('/metricas'), this.api.get<PedidoVista[]>('/pedidos')]); if (this.vistaActiva) { this.metricas.set(m); this.pedidos.set(p.slice(-6).reverse()); } }
+    catch (e) { if (this.vistaActiva) this.api.error.set(this.api.mensaje(e)); }
   }
   async controlar(accion: string): Promise<void> {
     await this.api.ejecutar('simulacion', () => this.api.post(`/simulacion/${accion}`), `Simulación: ${accion}.`);

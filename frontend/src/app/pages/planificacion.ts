@@ -15,8 +15,8 @@ export class PlanificacionPage extends Actualizacion {
   private poll?: ReturnType<typeof setInterval>; private consultandoComparacion = false; private destruida = false;
   override ngOnInit(): void { super.ngOnInit(); if (this.comparacion()?.estado === 'EN_CURSO') this.iniciarConsulta(); }
   protected async cargar(): Promise<void> {
-    try { const [p, m, c] = await Promise.all([this.api.get<Planificacion>('/planificacion'), this.api.get<Metricas>('/metricas'), this.api.get<Cola[]>('/pedidos/cola')]); this.plan.set(p); this.metricas.set(m); this.cola.set(c); if (!this.inicializada) { this.politica = p.politica; this.agingMinutos = p.intervaloAgingMillis / 60000; this.inicializada = true; } }
-    catch (e) { this.api.error.set(this.api.mensaje(e)); }
+    try { const [p, m, c] = await Promise.all([this.api.get<Planificacion>('/planificacion'), this.api.get<Metricas>('/metricas'), this.api.get<Cola[]>('/pedidos/cola')]); if (!this.vistaActiva) return; this.plan.set(p); this.metricas.set(m); this.cola.set(c); if (!this.inicializada) { this.politica = p.politica; this.agingMinutos = p.intervaloAgingMillis / 60000; this.inicializada = true; } }
+    catch (e) { if (this.vistaActiva) this.api.error.set(this.api.mensaje(e)); }
   }
   async guardar(): Promise<void> {
     if (!Number.isFinite(this.agingMinutos) || this.agingMinutos <= 0) { this.api.error.set('El intervalo de aging debe ser positivo.'); return; }
@@ -39,7 +39,7 @@ export class PlanificacionPage extends Actualizacion {
       const c = await this.api.get<Comparacion>(`/comparaciones/${id}`); if (this.destruida) return; this.comparacion.set(c);
       if (c.estado !== 'EN_CURSO' && this.poll) { clearInterval(this.poll); this.poll = undefined; }
       if (c.estado === 'ERROR') this.api.error.set(c.error || 'No se pudo completar la comparación.');
-    } catch (e) { this.api.error.set(this.api.mensaje(e)); }
+    } catch (e) { if (!this.destruida) this.api.error.set(this.api.mensaje(e)); }
     finally { this.consultandoComparacion = false; }
   }
   override ngOnDestroy(): void { this.destruida = true; if (this.poll) clearInterval(this.poll); super.ngOnDestroy(); }

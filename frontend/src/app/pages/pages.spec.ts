@@ -1,8 +1,9 @@
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
+import { provideRouter } from '@angular/router';
 import { ApiService } from '../core/api.service';
 import { EstadoService } from '../core/estado.service';
-import { Deadlock, Metricas } from '../core/models';
+import { Deadlock, Metricas, PedidoVista, Recurso } from '../core/models';
 import { DashboardPage } from './dashboard';
 import { PedidosPage } from './pedidos';
 import { InventarioPage } from './inventario';
@@ -27,7 +28,7 @@ describe('Pantallas operativas', () => {
       post: vi.fn(async (ruta: string) => ruta === '/clientes' ? {id:'cliente', servicioPreferido:'EXPRES'} : ruta === '/pedidos' ? {pedido:{id:'pedido'}} : ruta === '/recepciones' ? {ingreso:{id:'recepcion', producto:'GEN-01', cantidad:2}, estado:'EN_COLA'} : ruta === '/comparaciones' ? {id:'comp', estado:'EN_CURSO', resultado:null, error:null} : deadlock),
       put: vi.fn(async () => ({})), ejecutar: vi.fn(async (_clave: string, accion: () => Promise<unknown>) => accion()) };
     const estado = {simulacion: signal({estado:'EJECUTANDO', corrida:1, tiempoSimuladoMillis:0, factorTemporal:60}), recursos:signal([]), backendDisponible:signal(true), ws:{conectado:signal(false), snapshot:signal(null)}, refrescar:vi.fn(async () => {})};
-    TestBed.configureTestingModule({providers:[{provide:ApiService,useValue:api},{provide:EstadoService,useValue:estado}]});
+    TestBed.configureTestingModule({providers:[provideRouter([]),{provide:ApiService,useValue:api},{provide:EstadoService,useValue:estado}]});
   });
   it('controla el motor mediante sus endpoints', async () => {
     const p = TestBed.runInInjectionContext(() => new DashboardPage());
@@ -73,5 +74,32 @@ describe('Pantallas operativas', () => {
     await p.resolver('a'); expect(api.post).toHaveBeenCalledWith('/deadlock/resolver', {pedidoGanador:'a'});
     p.pedidoA = 'a'; p.pedidoB = 'b'; await p.iniciar();
     expect(api.post).toHaveBeenCalledWith('/deadlock/iniciar', {pedidoA:'a', pedidoB:'b'});
+  });
+  it('excluye pedidos mixtos y despachos que ya están en ejecución', () => {
+    const p = TestBed.runInInjectionContext(() => new DeadlockPage());
+    const pedido = (id: string, tipos: string[], etapa = 'RETIRO', estado = 'ESPERANDO_INVENTARIO') => ({
+      pedido: {id, lineas: tipos.map(tipo => ({producto: {tipo}, cantidad: 1}))}, progreso: {etapa, estado}
+    } as unknown as PedidoVista);
+    p.pedidos.set([pedido('valido', ['GENERAL']), pedido('mixto', ['GENERAL', 'FRAGIL']), pedido('despacho', ['GENERAL'], 'DESPACHO', 'EN_PROCESO')]);
+    expect(p.elegibles().map(x => x.pedido.id)).toEqual(['valido']);
+  });
+  it('no aplica respuestas pendientes a una vista destruida', async () => {
+    let terminar!: (valor: unknown) => void;
+    const pendiente = new Promise(resolve => { terminar = resolve; });
+    api.get.mockImplementation(() => pendiente);
+    const p = TestBed.runInInjectionContext(() => new PedidosPage());
+    const consulta = p.refrescar(); p.ngOnDestroy(); terminar([]); await consulta;
+    expect(p.pedidos()).toEqual([]); expect(api.error()).toBe('');
+  });
+  it('usa el factor recibido y la disponibilidad real de los recursos', async () => {
+    const estado = TestBed.inject(EstadoService);
+    estado.simulacion.set({estado:'EJECUTANDO', corrida:1, tiempoSimuladoMillis:0, factorTemporal:120});
+    const fixture = TestBed.createComponent(DashboardPage); fixture.detectChanges();
+    expect(fixture.componentInstance.factor).toBe(120);
+    fixture.componentInstance.factor = 90; fixture.componentInstance.factorModificado = true;
+    estado.simulacion.set({estado:'EJECUTANDO', corrida:1, tiempoSimuladoMillis:1, factorTemporal:180});
+    estado.recursos.set([{id:'S01', tipo:'ESCANER', disponible:false, propietario:'recepcion'} as Recurso]);
+    fixture.detectChanges(); expect(fixture.componentInstance.factor).toBe(90);
+    expect(fixture.componentInstance.todosRecursosLibres()).toBe(false); fixture.destroy();
   });
 });

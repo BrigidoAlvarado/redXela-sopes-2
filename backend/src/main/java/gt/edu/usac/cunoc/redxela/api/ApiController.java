@@ -76,7 +76,13 @@ public class ApiController {
             cliente(s.clienteId());
             creado[0] = pedidos.crear(s.clienteId(), s.nivelServicio(), s.lineas());
             try { procesador.procesar(creado[0].id()); }
-            catch (RuntimeException ex) { throw new IllegalStateException("Pedido creado pero no admitido; ID: " + creado[0].id(), ex); }
+            catch (RuntimeException ex) {
+                if (!procesador.admitido(creado[0].id())) {
+                    pedidos.descartarNoAdmitido(creado[0]);
+                    throw new IllegalStateException("Pedido no admitido; no se registró", ex);
+                }
+                throw new IllegalStateException("Pedido admitido pese al error; ID: " + creado[0].id(), ex);
+            }
         })) throw new IllegalStateException("La simulación debe estar ejecutándose");
         return vista(creado[0]);
     }

@@ -20,9 +20,10 @@ export class PedidosPage extends Actualizacion {
   protected async cargar(): Promise<void> {
     try {
       const [c, p, pedidos, cola, g, conflicto] = await Promise.all([this.api.get<Cliente[]>('/clientes'), this.api.get<Producto[]>('/catalogo'), this.api.get<PedidoVista[]>('/pedidos'), this.api.get<Cola[]>('/pedidos/cola'), this.api.get<Generador>('/generador'), this.api.get<Deadlock>('/deadlock')]);
+      if (!this.vistaActiva) return;
       this.clientes.set(c); this.productos.set(p); this.pedidos.set(pedidos.slice().reverse()); this.cola.set(cola); this.generador.set(g); this.conflicto.set(conflicto);
       if (!this.intervaloInicializado) { this.intervaloSegundos = g.intervaloMillis / 1000; this.intervaloInicializado = true; }
-    } catch (e) { this.api.error.set(this.api.mensaje(e)); }
+    } catch (e) { if (this.vistaActiva) this.api.error.set(this.api.mensaje(e)); }
   }
   unidades(p: PedidoVista): number { return p.pedido.lineas.reduce((s, l) => s + l.cantidad, 0); }
   estadoPedido(p: PedidoVista): string {
@@ -37,12 +38,12 @@ export class PedidosPage extends Actualizacion {
   async crearCliente(): Promise<void> {
     if (!this.nombre.trim() || !this.correo.trim()) { this.api.error.set('Completa el nombre y el correo.'); return; }
     const c = await this.api.ejecutar('cliente', () => this.api.post<Cliente>('/clientes', {nombre: this.nombre, correo: this.correo, servicioPreferido: this.servicio}), 'Cliente registrado.');
-    if (c) { this.clienteId = c.id; this.nivel = c.servicioPreferido; this.nombre = ''; this.correo = ''; await this.refrescar(); }
+    if (c && this.vistaActiva) { this.clienteId = c.id; this.nivel = c.servicioPreferido; this.nombre = ''; this.correo = ''; await this.refrescar(); }
   }
   async crearPedido(): Promise<void> {
     if (!this.clienteId || !this.lineasValidas()) { this.api.error.set('Selecciona cliente y productos distintos con cantidades positivas.'); return; }
     const p = await this.api.ejecutar('pedido', () => this.api.post<PedidoVista>('/pedidos', {clienteId: this.clienteId, nivelServicio: this.nivel, lineas: this.lineas}), 'Pedido admitido.');
-    if (p) { this.lineas = [{productoId: '', cantidad: 1}]; await this.refrescar(); }
+    if (p && this.vistaActiva) { this.lineas = [{productoId: '', cantidad: 1}]; await this.refrescar(); }
   }
   async controlarGenerador(accion: string): Promise<void> {
     await this.api.ejecutar('generador', () => this.api.post(`/generador/${accion}`), `Generador: ${accion}.`); await this.refrescar();

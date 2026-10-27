@@ -1,65 +1,68 @@
 # REDXela
 
-Proyecto final de Sistemas Operativos 2, CUNOC, segundo semestre de 2026.
+Simulador concurrente de un centro de distribución de comercio electrónico, proyecto final de Sistemas Operativos 2, CUNOC–USAC, segundo semestre de 2026. El [enunciado original](docs/Proyecto_Final_Sistemas_Operativos_2.md) es la fuente de requisitos.
 
-El [enunciado](docs/Proyecto_Final_Sistemas_Operativos_2.md) es la fuente principal de requisitos. La [propuesta de arquitectura](PROPUESTA_ARQUITECTURA.md) define el diseño aprobado.
+El backend ejecuta pedidos por etapas con trabajadores limitados y semáforos reales. Incluye planificación por prioridad, aging y SJF; recepción e inventario con productor-consumidor; almacenamiento por ubicaciones; generador automático; métricas y comparación; y una demostración de deadlock real con recuperación manual. Angular permite operar y observar estas funciones por REST y WebSocket/STOMP.
 
-## Estado actual: F9
+## Requisitos previos
 
-Implementados el arranque Spring Boot y Angular, el catálogo fijo de diez productos, los cinco tipos de mercancía, niveles de servicio, modelos de cliente/pedido, validaciones, creación y consulta en memoria, y rutas descriptivas por etapa.
+- JDK 21; `JAVA_HOME` debe apuntar al JDK correcto.
+- Maven Wrapper incluido en `backend/`; no se necesita Maven global.
+- Node.js 24 y npm. `frontend/.nvmrc` contiene la versión recomendada.
+- Primera descarga: acceso a Maven Central y npm. No se requiere base de datos.
+- Spring Boot 4.1.2 y Angular 21.2.0 están fijados en los manifiestos.
 
-El backend contiene un motor de simulación con inicio, pausa, reanudación y detención, un reloj simulado y trabajadores limitados. Los recursos físicos se controlan con semáforos y los pedidos se procesan concurrentemente por etapas. F4 permite seleccionar prioridad estricta, prioridad con aging o SJF y consultar la cola ordenada. El motor se crea detenido y los servicios están disponibles como beans de Spring.
+## Ejecutar
 
-F5 incorpora inventario en memoria inicialmente vacío, reservas atómicas, retiro por etapa, almacenamiento físico por ubicaciones y recepción mediante una cola acotada. Los pedidos sin existencias esperan sin ocupar trabajadores y se reactivan al recibir mercadería. Recepción y despacho comparten el escáner físico S01.
-
-F6 agrega generación automática de pedidos con el reloj simulado y una demostración de deadlock real y controlada entre dos despachos. La demostración conserva C01 y S01 mediante semáforos reales, detecta la espera circular y requiere seleccionar manualmente la operación que continúa.
-
-F7 incorpora métricas de pedidos, niveles de servicio y ocupación de recursos por corrida. También permite comparar las tres políticas mediante una carga fija ejecutada en instancias aisladas.
-
-F8 expone una API REST bajo `/api` y snapshots mediante STOMP/WebSocket en `/ws`, canal `/topic/estado`.
-
-F9 incorpora una interfaz Angular para controlar la simulación, registrar clientes, pedidos y recepciones, observar recursos, cambiar políticas, consultar métricas y resolver el deadlock real.
-
-## Requisitos
-
-- JDK 21.
-- Maven 3.9.16 mediante el Wrapper incluido; no es necesario instalar Maven globalmente.
-- Node.js 24.22.1 LTS, indicado en `frontend/.nvmrc`; npm incluido en esa distribución.
-- Spring Boot 4.1.2 y Angular/CLI 21.2.0, fijados en sus manifiestos.
-
-La primera ejecución necesita acceso a Maven Central y al registro npm para descargar las dependencias. El proyecto no requiere base de datos.
-
-## Backend
-
-Desde `backend/`:
+Desde la raíz, en una terminal:
 
 ```bash
-./mvnw verify
+cd backend
 ./mvnw spring-boot:run
 ```
 
-En Windows se utiliza `mvnw.cmd`. El servidor arranca en `http://localhost:8080`; la API comienza en `/api` y una consulta a `/` devuelve 404. El artefacto ejecutable se genera en `backend/target/redxela-0.1.0.jar`.
-
-El `pom.xml` se puede importar como proyecto Maven en IntelliJ, seleccionando JDK 21 y Maven Wrapper.
-En la terminal, `./mvnw -version` muestra el JDK que utiliza Maven; si `JAVA_HOME` está definido, debe apuntar al JDK 21.
-
-## Frontend
-
-Desde `frontend/`, con Node 24 activo:
+En otra terminal:
 
 ```bash
+cd frontend
 npm ci
-npm test
-npm run build
 npm start
 ```
 
-Si se utiliza nvm, `nvm install` y `nvm use` leen `.nvmrc`. La aplicación de desarrollo utiliza `http://127.0.0.1:4200` y se conecta al backend en `http://localhost:8080`.
+Abra **http://127.0.0.1:4200**. El backend escucha en **http://localhost:8080**, API `/api`, WebSocket `/ws` y canal `/topic/estado`. En Windows use `mvnw.cmd`. El motor inicia detenido, con cuatro trabajadores y factor 60; el inventario inicial está vacío.
 
-## Motor de simulación
+En IntelliJ importe `backend/pom.xml` como Maven y seleccione JDK 21. Si aparece que falta `WebSocketMessageBrokerConfigurer`, use **Reload All Maven Projects**, revise la configuración de ejecución y confirme que se descargó `spring-boot-starter-websocket`; en terminal verifique `./mvnw -version` y `./mvnw spring-boot:run`.
 
-La configuración inicial en `backend/src/main/resources/application.yml` es de cuatro trabajadores y un factor de 60: un segundo real equivale a 60 segundos simulados. Ambos valores pueden modificarse antes de arrancar Spring; la velocidad también puede cambiarse a través del servicio Java durante una corrida.
+## Pruebas y compilación
 
-El [manual técnico de F9](docs/manual-tecnico/F9.md) explica la interfaz y su ejecución. El [manual de F8](docs/manual-tecnico/F8.md) documenta endpoints, JSON y WebSocket. Los manuales de [F7](docs/manual-tecnico/F7.md), [F6](docs/manual-tecnico/F6.md), [F5](docs/manual-tecnico/F5.md), [F4](docs/manual-tecnico/F4.md), [F3](docs/manual-tecnico/F3.md), [F2](docs/manual-tecnico/F2.md) y [F1](docs/manual-tecnico/F1.md) detallan las fases anteriores.
+```bash
+cd backend
+./mvnw verify
+```
 
-La implementación se detiene en F9 hasta su revisión.
+```bash
+cd frontend
+npm ci
+npm test
+npm run build
+```
+
+Las pruebas backend incluyen concurrencia, integración HTTP y STOMP. Las pruebas frontend usan mocks y no necesitan servidor. Para los recorridos reales consulte el informe; no equivalen a probar cada escenario exhaustivamente.
+
+## Repositorio y documentación
+
+```text
+backend/       Código Java, Maven y pruebas
+frontend/      Aplicación Angular y pruebas
+docs/          Enunciado, manuales y verificación
+```
+
+- [Manual técnico consolidado](docs/manual-tecnico/README.md), con referencias a F1–F9 y [contrato API](docs/manual-tecnico/F8.md).
+- [Manual de usuario](docs/manual-usuario/README.md).
+- [Guía de demostración](docs/GUIA_DEMOSTRACION.md).
+- [Informe de verificación y limitaciones](docs/INFORME_VERIFICACION_FINAL.md).
+- [Propuesta de arquitectura](PROPUESTA_ARQUITECTURA.md), referencia secundaria.
+
+## Limitaciones
+
+Los datos se mantienen en memoria y se pierden al cerrar el backend. El objetivo Exprés usa 30 segundos simulados como interpretación de «casi instantáneo». La comparación usa una carga fija equivalente y sus resultados pueden variar por concurrencia; no acredita una política universalmente superior. La interfaz selecciona para la demostración pedidos exclusivamente de mercancía general y el backend valida su elegibilidad definitiva. Recepciones y comparaciones iniciadas se recuerdan en la sesión de la interfaz; tras recargar se puede consultar una recepción por su ID completo. No hay autenticación ni persistencia.

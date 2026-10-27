@@ -68,6 +68,8 @@ public final class ProcesadorPedidos implements AutoCloseable {
         return ejecucion.resultado;
     }
 
+    public synchronized boolean admitido(UUID id) { return ejecuciones.containsKey(id); }
+
     /** Aparta el siguiente despacho de dos pedidos sin repetir sus etapas anteriores. */
     public synchronized void prepararConflicto(UUID a, UUID b) {
         if (Objects.equals(a, b)) throw new IllegalArgumentException("Se necesitan dos pedidos distintos");
