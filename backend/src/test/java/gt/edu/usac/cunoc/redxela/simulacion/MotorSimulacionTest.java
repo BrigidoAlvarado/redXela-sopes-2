@@ -43,6 +43,18 @@ class MotorSimulacionTest {
     }
 
     @Test
+    void noAdmiteTrabajosDeUnaCorridaAnterior() throws Exception {
+        try (var motor = new MotorSimulacion(1, 60)) {
+            motor.iniciar();
+            long anterior = motor.estadoCorrida().corrida();
+            motor.detener();
+            motor.iniciar();
+            assertThrows(IllegalStateException.class, () -> motor.enviarTrabajo(anterior, contexto -> { }));
+            motor.enviarTrabajo(motor.corridaActual(), contexto -> { }).get(10, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void iniciosConcurrentesSoloCreanUnaCorrida() throws Exception {
         try (var motor = new MotorSimulacion(2, 60)) {
             var resultados = Concurrencia.ejecutar(32, indice -> {

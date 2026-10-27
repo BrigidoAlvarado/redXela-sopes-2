@@ -7,7 +7,9 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
-import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -17,20 +19,28 @@ final class EjecutorTrabajos {
     private final Set<FutureTask<Void>> trabajos = ConcurrentHashMap.newKeySet();
     private final Set<Thread> hilos = ConcurrentHashMap.newKeySet();
     private final ThreadPoolExecutor ejecutor;
+    private final Semaphore cupos;
 
-    EjecutorTrabajos(int trabajadores, long corrida) {
+    EjecutorTrabajos(int trabajadores, long corrida, Runnable alLiberarTrabajador) {
+        cupos = new Semaphore(trabajadores);
         var numeroHilo = new AtomicInteger();
         ejecutor = new ThreadPoolExecutor(trabajadores, trabajadores, 0, TimeUnit.MILLISECONDS,
-                new SynchronousQueue<>(), tarea -> {
+                new ArrayBlockingQueue<>(trabajadores), tarea -> {
                     var hilo = new Thread(tarea,
                             "redxela-corrida-" + corrida + "-trabajador-" + numeroHilo.incrementAndGet());
                     hilo.setDaemon(false);
                     hilos.add(hilo);
                     return hilo;
-                }, new ThreadPoolExecutor.AbortPolicy());
+                }, new ThreadPoolExecutor.AbortPolicy()) {
+            @Override protected void afterExecute(Runnable tarea, Throwable fallo) {
+                try { super.afterExecute(tarea, fallo); }
+                finally { cupos.release(); alLiberarTrabajador.run(); }
+            }
+        };
     }
 
     Future<Void> enviar(Callable<Void> trabajo) {
+        if (!cupos.tryAcquire()) throw new RejectedExecutionException("No hay trabajadores disponibles");
         var futuro = new FutureTask<Void>(() -> {
             try {
                 return trabajo.call();
@@ -49,6 +59,7 @@ final class EjecutorTrabajos {
             return futuro;
         } catch (RuntimeException falloAdmision) {
             futuro.cancel(false);
+            cupos.release();
             throw falloAdmision;
         }
     }

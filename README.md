@@ -4,13 +4,13 @@ Proyecto final de Sistemas Operativos 2, CUNOC, segundo semestre de 2026.
 
 El [enunciado](.docs/Proyecto_Final_Sistemas_Operativos_2.md) es la fuente principal de requisitos. La [propuesta de arquitectura](PROPUESTA_ARQUITECTURA.md) define el diseño aprobado.
 
-## Estado actual: F2
+## Estado actual: F3
 
 Implementados el arranque Spring Boot y Angular, el catálogo fijo de diez productos, los cinco tipos de mercancía, niveles de servicio, modelos de cliente/pedido, validaciones, creación y consulta en memoria, y rutas descriptivas por etapa.
 
-El backend también contiene un motor de simulación con inicio, pausa, reanudación y detención, un reloj simulado y trabajadores limitados para tareas cooperativas. El motor se crea detenido y todavía no procesa pedidos. Sus servicios Java están conectados como beans de Spring y se verifican mediante pruebas.
+El backend contiene un motor de simulación con inicio, pausa, reanudación y detención, un reloj simulado y trabajadores limitados. F3 incorpora recursos físicos controlados por semáforos y procesamiento concurrente de pedidos por etapas. El motor se crea detenido y los servicios están disponibles como beans de Spring.
 
-Angular contiene únicamente la aplicación raíz standalone. Aún no hay API de negocio, formularios operativos, generación, planificación, procesamiento de pedidos, inventario, semáforos ni deadlock ejecutable: pertenecen a las siguientes fases. Las capacidades e identificadores C01/S01 están definidos en el modelo sin asignaciones ficticias.
+Angular contiene únicamente la aplicación raíz standalone. Aún no hay API de negocio, formularios operativos, generación automática, políticas de planificación, inventario ni deadlock ejecutable. En F3 los pedidos se procesan sin descontar existencias; esta simplificación se sustituirá en F5.
 
 ## Requisitos
 
@@ -52,6 +52,6 @@ Si se utiliza nvm, `nvm install` y `nvm use` leen `.nvmrc`. La aplicación de de
 
 La configuración inicial en `backend/src/main/resources/application.yml` es de cuatro trabajadores y un factor de 60: un segundo real equivale a 60 segundos simulados. Ambos valores pueden modificarse antes de arrancar Spring; la velocidad también puede cambiarse a través del servicio Java durante una corrida.
 
-Por ahora, el motor se utiliza desde código Java y pruebas; no hay controles REST ni interfaz gráfica. [El manual técnico de F2](docs/manual-tecnico/F2.md) explica el contrato cooperativo, los estados y la detención segura. La [documentación de F1](docs/manual-tecnico/F1.md) conserva el detalle del dominio y las definiciones de tiempos de espera.
+Por ahora, el motor y el procesador se utilizan desde código Java y pruebas; no hay controles REST ni interfaz gráfica. El [manual técnico de F3](docs/manual-tecnico/F3.md) explica recursos y procesamiento. Los manuales de [F2](docs/manual-tecnico/F2.md) y [F1](docs/manual-tecnico/F1.md) detallan el motor y el dominio.
 
-La implementación se detiene en F2 hasta su revisión. Las rutas de trabajo de F1 siguen siendo descriptivas y aún no ejecutan pedidos.
+La implementación se detiene en F3 hasta su revisión. La selección FCFS es provisional; F4 incorporará las políticas solicitadas.

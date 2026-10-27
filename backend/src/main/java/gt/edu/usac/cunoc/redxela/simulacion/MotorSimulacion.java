@@ -3,6 +3,8 @@ package gt.edu.usac.cunoc.redxela.simulacion;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -17,6 +19,12 @@ public final class MotorSimulacion implements AutoCloseable {
     private EstadoSimulacion estado = EstadoSimulacion.DETENIDA;
     private long corrida;
     private EjecutorTrabajos ejecutor;
+    private final CopyOnWriteArraySet<Semaphore> avisos = new CopyOnWriteArraySet<>();
+
+    /** La señal solo despierta al coordinador; no ejecuta código dentro del lock del motor. */
+    public void registrarAvisos(Semaphore aviso) { avisos.add(Objects.requireNonNull(aviso)); }
+    public void retirarAvisos(Semaphore aviso) { avisos.remove(aviso); }
+    private void avisar() { avisos.forEach(Semaphore::release); }
 
     public MotorSimulacion(int trabajadores, double factorTemporal) {
         this(trabajadores, new RelojSimulado(factorTemporal), Duration.ofSeconds(5));
@@ -38,9 +46,10 @@ public final class MotorSimulacion implements AutoCloseable {
         lock.lock();
         try {
             exigirEstado(EstadoSimulacion.DETENIDA);
-            ejecutor = new EjecutorTrabajos(trabajadores, ++corrida);
+            ejecutor = new EjecutorTrabajos(trabajadores, ++corrida, this::avisar);
             reloj.iniciar();
             estado = EstadoSimulacion.EJECUTANDO;
+            avisar();
         } finally {
             lock.unlock();
         }
@@ -53,6 +62,7 @@ public final class MotorSimulacion implements AutoCloseable {
             // avanzar comparte este lock: al retornar ya terminó cualquier paso corto previo.
             reloj.pausar();
             estado = EstadoSimulacion.PAUSADA;
+            avisar();
             cambio.signalAll();
         } finally {
             lock.unlock();
@@ -65,6 +75,7 @@ public final class MotorSimulacion implements AutoCloseable {
             exigirEstado(EstadoSimulacion.PAUSADA);
             reloj.reanudar();
             estado = EstadoSimulacion.EJECUTANDO;
+            avisar();
             cambio.signalAll();
         } finally {
             lock.unlock();
@@ -87,6 +98,17 @@ public final class MotorSimulacion implements AutoCloseable {
         }
     }
 
+    /** La verificación y la admisión pertenecen a la misma sección crítica. */
+    public Future<Void> enviarTrabajo(long corridaEsperada, TrabajoSimulado trabajo) {
+        lock.lock();
+        try {
+            if (corrida != corridaEsperada) throw new IllegalStateException("Corrida anterior");
+            return enviarTrabajo(trabajo);
+        } finally {
+            lock.unlock();
+        }
+    }
+
     public void detener() throws InterruptedException {
         EjecutorTrabajos anterior;
         lock.lock();
@@ -99,6 +121,7 @@ public final class MotorSimulacion implements AutoCloseable {
             }
             reloj.pausar();
             estado = EstadoSimulacion.DETENIENDO;
+            avisar();
             anterior = ejecutor;
             // Cancela antes de despertar: ningún trabajador puede completar el Future
             // al observar DETENIENDO entre la transición y la solicitud de cancelación.
@@ -130,6 +153,7 @@ public final class MotorSimulacion implements AutoCloseable {
             if (ejecutor == anterior) {
                 ejecutor = null;
                 estado = EstadoSimulacion.DETENIDA;
+                avisar();
             }
         } finally {
             lock.unlock();
@@ -140,6 +164,14 @@ public final class MotorSimulacion implements AutoCloseable {
         lock.lock();
         try { return estado; } finally { lock.unlock(); }
     }
+
+    /** Estado e identidad se leen juntos para no confundir dos corridas concurrentes. */
+    public EstadoCorrida estadoCorrida() {
+        lock.lock();
+        try { return new EstadoCorrida(estado, corrida); } finally { lock.unlock(); }
+    }
+
+    public record EstadoCorrida(EstadoSimulacion estado, long corrida) { }
 
     public long corridaActual() {
         lock.lock();
