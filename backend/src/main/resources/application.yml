@@ -3,3 +3,7 @@ spring:
     name: redxela
 server:
   port: 8080
+redxela:
+  simulacion:
+    trabajadores: 4
+    factor-tiempo: 60
