@@ -4,13 +4,15 @@ Proyecto final de Sistemas Operativos 2, CUNOC, segundo semestre de 2026.
 
 El [enunciado](docs/Proyecto_Final_Sistemas_Operativos_2.md) es la fuente principal de requisitos. La [propuesta de arquitectura](PROPUESTA_ARQUITECTURA.md) define el diseño aprobado.
 
-## Estado actual: F5
+## Estado actual: F6
 
 Implementados el arranque Spring Boot y Angular, el catálogo fijo de diez productos, los cinco tipos de mercancía, niveles de servicio, modelos de cliente/pedido, validaciones, creación y consulta en memoria, y rutas descriptivas por etapa.
 
 El backend contiene un motor de simulación con inicio, pausa, reanudación y detención, un reloj simulado y trabajadores limitados. Los recursos físicos se controlan con semáforos y los pedidos se procesan concurrentemente por etapas. F4 permite seleccionar prioridad estricta, prioridad con aging o SJF y consultar la cola ordenada. El motor se crea detenido y los servicios están disponibles como beans de Spring.
 
 F5 incorpora inventario en memoria inicialmente vacío, reservas atómicas, retiro por etapa, almacenamiento físico por ubicaciones y recepción mediante una cola acotada. Los pedidos sin existencias esperan sin ocupar trabajadores y se reactivan al recibir mercadería. Recepción y despacho comparten el escáner físico S01.
+
+F6 agrega generación automática de pedidos con el reloj simulado y una demostración de deadlock real y controlada entre dos despachos. La demostración conserva C01 y S01 mediante semáforos reales, detecta la espera circular y requiere seleccionar manualmente la operación que continúa.
 
 Angular contiene únicamente la aplicación raíz standalone. Aún no hay API de negocio, formularios operativos, generación automática ni deadlock ejecutable.
 
@@ -54,6 +56,6 @@ Si se utiliza nvm, `nvm install` y `nvm use` leen `.nvmrc`. La aplicación de de
 
 La configuración inicial en `backend/src/main/resources/application.yml` es de cuatro trabajadores y un factor de 60: un segundo real equivale a 60 segundos simulados. Ambos valores pueden modificarse antes de arrancar Spring; la velocidad también puede cambiarse a través del servicio Java durante una corrida.
 
-Por ahora, los servicios se utilizan desde código Java y pruebas; no hay controles REST ni interfaz gráfica. El [manual técnico de F5](docs/manual-tecnico/F5.md) explica recepción, inventario y almacenamiento. Los manuales de [F4](docs/manual-tecnico/F4.md), [F3](docs/manual-tecnico/F3.md), [F2](docs/manual-tecnico/F2.md) y [F1](docs/manual-tecnico/F1.md) detallan planificación, recursos, motor y dominio.
+Por ahora, los servicios se utilizan desde código Java y pruebas; no hay controles REST ni interfaz gráfica. El [manual técnico de F6](docs/manual-tecnico/F6.md) explica generación y deadlock. Los manuales de [F5](docs/manual-tecnico/F5.md), [F4](docs/manual-tecnico/F4.md), [F3](docs/manual-tecnico/F3.md), [F2](docs/manual-tecnico/F2.md) y [F1](docs/manual-tecnico/F1.md) detallan inventario, planificación, recursos, motor y dominio.
 
-La implementación se detiene en F5 hasta su revisión.
+La implementación se detiene en F6 hasta su revisión.
