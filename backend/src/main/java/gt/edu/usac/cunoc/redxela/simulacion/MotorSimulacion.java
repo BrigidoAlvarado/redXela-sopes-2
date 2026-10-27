@@ -168,10 +168,10 @@ public final class MotorSimulacion implements AutoCloseable {
     /** Estado e identidad se leen juntos para no confundir dos corridas concurrentes. */
     public EstadoCorrida estadoCorrida() {
         lock.lock();
-        try { return new EstadoCorrida(estado, corrida); } finally { lock.unlock(); }
+        try { return new EstadoCorrida(estado, corrida, reloj.tiempoActual()); } finally { lock.unlock(); }
     }
 
-    public record EstadoCorrida(EstadoSimulacion estado, long corrida) { }
+    public record EstadoCorrida(EstadoSimulacion estado, long corrida, long tiempoSimulado) { }
 
     public long corridaActual() {
         lock.lock();

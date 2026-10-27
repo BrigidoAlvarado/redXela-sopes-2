@@ -3,10 +3,12 @@ package gt.edu.usac.cunoc.redxela.pedidos;
 import gt.edu.usac.cunoc.redxela.recursos.GestorRecursos;
 import gt.edu.usac.cunoc.redxela.simulacion.EstadoSimulacion;
 import gt.edu.usac.cunoc.redxela.simulacion.MotorSimulacion;
+import gt.edu.usac.cunoc.redxela.planificacion.PlanificadorPedidos;
+import gt.edu.usac.cunoc.redxela.planificacion.PoliticaPlanificacion;
+import gt.edu.usac.cunoc.redxela.catalogo.NivelServicio;
 
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -17,7 +19,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 
-/** Coordinador FCFS provisional. Los pedidos pendientes no ocupan trabajadores. */
+/** Coordina etapas y selecciona sobre la misma colección de pedidos pendientes. */
 public final class ProcesadorPedidos implements AutoCloseable {
     private final PedidoService pedidos;
     private final MotorSimulacion motor;
@@ -26,6 +28,8 @@ public final class ProcesadorPedidos implements AutoCloseable {
     private final Semaphore aviso = new Semaphore(0);
     private final Thread coordinador;
     private volatile boolean cerrado;
+    private PoliticaPlanificacion politica = PoliticaPlanificacion.PRIORIDAD;
+    private Duration intervaloAging = Duration.ofMinutes(5);
 
     public ProcesadorPedidos(PedidoService pedidos, MotorSimulacion motor, GestorRecursos recursos) {
         this.pedidos = Objects.requireNonNull(pedidos, "Pedidos");
@@ -43,7 +47,7 @@ public final class ProcesadorPedidos implements AutoCloseable {
         Pedido pedido = pedidos.buscar(id);
         var estadoCorrida = motor.estadoCorrida();
         if (estadoCorrida.estado() != EstadoSimulacion.EJECUTANDO) throw new IllegalStateException("Motor no está ejecutando");
-        Ejecucion ejecucion = new Ejecucion(pedido, estadoCorrida.corrida());
+        Ejecucion ejecucion = new Ejecucion(pedido, estadoCorrida.corrida(), estadoCorrida.tiempoSimulado());
         synchronized (this) {
             if (cerrado) throw new IllegalStateException("Procesador cerrado");
             if (ejecuciones.containsKey(id)) throw new IllegalStateException("Pedido ya registrado");
@@ -54,13 +58,59 @@ public final class ProcesadorPedidos implements AutoCloseable {
     }
 
     public Progreso consultar(UUID id) {
-        long ahora = motor.tiempoActual();
+        var estadoCorrida = motor.estadoCorrida();
         synchronized (this) {
             Ejecucion e = ejecuciones.get(id);
             if (e == null) throw new IllegalArgumentException("Pedido no registrado: " + id);
+            // El reloj de una nueva corrida no se mezcla con los tiempos de otra.
+            long ahora = e.corrida == estadoCorrida.corrida() ? estadoCorrida.tiempoSimulado() : e.ultimoInstante;
             return vista(e, ahora);
         }
     }
+
+    public synchronized PoliticaPlanificacion politica() { return politica; }
+
+    public void cambiarPolitica(PoliticaPlanificacion nueva) {
+        synchronized (this) { politica = Objects.requireNonNull(nueva, "Política"); }
+        aviso.release();
+    }
+
+    public synchronized Duration intervaloAging() { return intervaloAging; }
+
+    public void cambiarIntervaloAging(Duration intervalo) {
+        PlanificadorPedidos.intervaloNanos(intervalo);
+        synchronized (this) { intervaloAging = intervalo; }
+        aviso.release();
+    }
+
+    /** Orden de preferencia completo, incluido quien espera recursos; no adquiere permisos. */
+    public List<EntradaCola> consultarCola() {
+        var estadoCorrida = motor.estadoCorrida();
+        long version = recursos.version();
+        synchronized (this) {
+            long ahora = estadoCorrida.tiempoSimulado();
+            var comparador = PlanificadorPedidos.comparador(politica, intervaloAging);
+            var ordenados = ejecuciones.values().stream()
+                    .filter(e -> e.corrida == estadoCorrida.corrida() && e.estado == EstadoPedido.ESPERANDO_RECURSOS)
+                    .sorted((a, b) -> comparador.compare(candidato(a, ahora), candidato(b, ahora))).toList();
+            var resultado = new ArrayList<EntradaCola>();
+            for (int i = 0; i < ordenados.size(); i++) {
+                Ejecucion e = ordenados.get(i);
+                var c = candidato(e, ahora);
+                String motivo = e.enviado ? "Admitido; pendiente de inicio o recursos"
+                        : e.versionBloqueada == version ? "Recursos insuficientes"
+                        : "Esperando turno o trabajador";
+                Long prioridad = politica == PoliticaPlanificacion.AGING
+                        ? PlanificadorPedidos.prioridadEfectiva(c, intervaloAging) : null;
+                resultado.add(new EntradaCola(e.pedido.id(), e.pedido.nivelServicio(), e.pedido.unidadesTotales(),
+                        i + 1, e.estado, Duration.ofNanos(c.esperaNanos()), prioridad, motivo));
+            }
+            return List.copyOf(resultado);
+        }
+    }
+
+    public record EntradaCola(UUID pedidoId, NivelServicio nivelServicio, long unidades, int orden,
+                              EstadoPedido estado, Duration esperaAcumulada, Long prioridadEfectiva, String motivo) { }
 
     /** Duración en tiempo simulado: un segundo base y 100 ms por unidad. */
     public static Duration duracion(PasoTrabajo paso) {
@@ -84,16 +134,17 @@ public final class ProcesadorPedidos implements AutoCloseable {
             var estadoCorrida = motor.estadoCorrida();
             EstadoSimulacion estadoMotor = estadoCorrida.estado();
             long corrida = estadoCorrida.corrida();
+            long ahora = estadoCorrida.tiempoSimulado();
             long version = recursos.version();
             Ejecucion siguiente;
             var cancelados = new ArrayList<CompletableFuture<Progreso>>();
             synchronized (this) {
+                var comparador = PlanificadorPedidos.comparador(politica, intervaloAging);
                 for (Ejecucion e : ejecuciones.values()) {
                     if (e.estado != EstadoPedido.COMPLETADO && e.estado != EstadoPedido.ERROR
                             && (e.corrida < corrida || (e.corrida == corrida &&
                             (estadoMotor == EstadoSimulacion.DETENIENDO || estadoMotor == EstadoSimulacion.DETENIDA)))) {
-                        e.estado = EstadoPedido.ERROR;
-                        e.error = "Simulación detenida";
+                        marcarError(e, e.corrida == corrida ? ahora : e.ultimoInstante, "Simulación detenida");
                         recursos.cancelarEspera(e.operacion());
                         if (!e.iniciado) cancelados.add(e.resultado);
                     }
@@ -101,7 +152,7 @@ public final class ProcesadorPedidos implements AutoCloseable {
                 siguiente = estadoMotor != EstadoSimulacion.EJECUTANDO ? null : ejecuciones.values().stream()
                         .filter(e -> e.corrida == corrida && e.estado == EstadoPedido.ESPERANDO_RECURSOS && !e.enviado
                                 && e.versionBloqueada != version)
-                        .min(Comparator.comparingLong(e -> e.pedido.secuenciaEntrada())).orElse(null);
+                        .min((a, b) -> comparador.compare(candidato(a, ahora), candidato(b, ahora))).orElse(null);
                 if (siguiente != null) siguiente.enviado = true;
             }
             cancelados.forEach(f -> f.completeExceptionally(new IllegalStateException("Simulación detenida")));
@@ -130,7 +181,11 @@ public final class ProcesadorPedidos implements AutoCloseable {
                     } else {
                         asignacion[0] = obtenida.orElseThrow();
                         e.asignados = asignacion[0].recursos();
-                        e.inicioPaso = motor.tiempoActual();
+                        long ahora = motor.tiempoActual();
+                        e.esperaAcumulada = espera(e, ahora);
+                        if (e.primeraAtencion < 0) e.primeraAtencion = ahora - e.llegada;
+                        e.inicioPaso = ahora;
+                        e.ultimoInstante = ahora;
                         e.estado = EstadoPedido.EN_PROCESO;
                     }
                 }
@@ -139,18 +194,24 @@ public final class ProcesadorPedidos implements AutoCloseable {
             PasoTrabajo paso = e.plan.pasos().get(e.completados);
             contexto.esperar(duracion(paso));
             contexto.avanzar(() -> {
+                long ahora = motor.tiempoActual();
                 synchronized (this) {
+                    e.procesamientoAcumulado += Math.max(0, ahora - e.inicioPaso);
+                    e.ultimoInstante = ahora;
                     e.completados++;
                     e.estado = e.completados == e.plan.pasos().size()
                             ? EstadoPedido.COMPLETADO : EstadoPedido.ESPERANDO_RECURSOS;
+                    if (e.estado == EstadoPedido.ESPERANDO_RECURSOS) e.esperaDesde = ahora;
                     e.versionBloqueada = -1;
                 }
             });
         } catch (InterruptedException interrumpido) {
-            synchronized (this) { e.estado = EstadoPedido.ERROR; e.error = "Trabajo interrumpido"; }
+            long ahora = motor.tiempoActual();
+            synchronized (this) { marcarError(e, ahora, "Trabajo interrumpido"); }
             throw interrumpido;
         } catch (RuntimeException fallo) {
-            synchronized (this) { e.estado = EstadoPedido.ERROR; e.error = fallo.getMessage(); }
+            long ahora = motor.tiempoActual();
+            synchronized (this) { marcarError(e, ahora, fallo.getMessage()); }
         } finally {
             if (asignacion[0] != null) asignacion[0].close();
             boolean fallo;
@@ -184,12 +245,35 @@ public final class ProcesadorPedidos implements AutoCloseable {
             restante = Duration.ofNanos(nanos);
         }
         return new Progreso(e.pedido.id(), e.estado, actual == null ? null : actual.etapa(), e.completados,
-                e.plan.pasos().size(), 100.0 * e.completados / e.plan.pasos().size(), e.asignados, restante, e.error);
+                e.plan.pasos().size(), 100.0 * e.completados / e.plan.pasos().size(), e.asignados, restante, e.error,
+                e.primeraAtencion < 0 ? null : Duration.ofNanos(e.primeraAtencion),
+                Duration.ofNanos(espera(e, ahora)),
+                Duration.ofNanos(e.procesamientoAcumulado + (e.estado == EstadoPedido.EN_PROCESO
+                        ? Math.max(0, ahora - e.inicioPaso) : 0)));
     }
 
     public record Progreso(UUID pedidoId, EstadoPedido estado, EtapaPedido etapa, int pasosCompletados,
                            int pasosTotales, double porcentaje, List<String> recursos,
-                           Duration restanteEstimado, String error) { }
+                           Duration restanteEstimado, String error, Duration primeraAtencion,
+                           Duration esperaAcumulada, Duration procesamientoAcumulado) { }
+
+    private static long espera(Ejecucion e, long ahora) {
+        return e.esperaAcumulada + (e.estado == EstadoPedido.ESPERANDO_RECURSOS
+                ? Math.max(0, ahora - e.esperaDesde) : 0);
+    }
+
+    private static PlanificadorPedidos.Candidato candidato(Ejecucion e, long ahora) {
+        return new PlanificadorPedidos.Candidato(e.pedido, espera(e, ahora));
+    }
+
+    private static void marcarError(Ejecucion e, long ahora, String mensaje) {
+        if (e.estado == EstadoPedido.ERROR || e.estado == EstadoPedido.COMPLETADO) return;
+        e.esperaAcumulada = espera(e, ahora);
+        if (e.estado == EstadoPedido.EN_PROCESO) e.procesamientoAcumulado += Math.max(0, ahora - e.inicioPaso);
+        e.ultimoInstante = ahora;
+        e.estado = EstadoPedido.ERROR;
+        e.error = mensaje;
+    }
 
     private static final class Ejecucion {
         final Pedido pedido;
@@ -202,10 +286,17 @@ public final class ProcesadorPedidos implements AutoCloseable {
         boolean iniciado;
         long versionBloqueada = -1;
         long inicioPaso;
+        final long llegada;
+        long esperaDesde;
+        long esperaAcumulada;
+        long procesamientoAcumulado;
+        long primeraAtencion = -1;
+        long ultimoInstante;
         List<String> asignados = List.of();
         String error;
-        Ejecucion(Pedido pedido, long corrida) {
+        Ejecucion(Pedido pedido, long corrida, long llegada) {
             this.pedido = pedido; this.corrida = corrida; this.plan = PlanTrabajo.paraPedido(pedido);
+            this.llegada = llegada; this.esperaDesde = llegada; this.ultimoInstante = llegada;
         }
         String operacion() { return pedido.id() + ":" + completados; }
     }
@@ -217,10 +308,15 @@ public final class ProcesadorPedidos implements AutoCloseable {
             motor.detener();
             coordinador.join(5000);
             if (coordinador.isAlive()) throw new IllegalStateException("Coordinador no terminó");
+            var estadoCorrida = motor.estadoCorrida();
             List<Ejecucion> pendientes;
             synchronized (this) {
                 pendientes = ejecuciones.values().stream().filter(e -> !e.resultado.isDone()).toList();
-                pendientes.forEach(e -> { e.estado = EstadoPedido.ERROR; recursos.cancelarEspera(e.operacion()); });
+                pendientes.forEach(e -> {
+                    marcarError(e, e.corrida == estadoCorrida.corrida() ? estadoCorrida.tiempoSimulado() : e.ultimoInstante,
+                            "Procesador cerrado");
+                    recursos.cancelarEspera(e.operacion());
+                });
             }
             pendientes.forEach(e -> e.resultado.completeExceptionally(new IllegalStateException("Procesador cerrado")));
         } catch (InterruptedException interrumpido) {
