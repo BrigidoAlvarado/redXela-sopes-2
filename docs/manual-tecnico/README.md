@@ -1297,6 +1297,8 @@ npm run build
 
 En esta revisión se ejecutó el backend con Java 21 y `./mvnw -o -B -ntp verify`: **181 pruebas, cero fallos, errores u omisiones; BUILD SUCCESS**. `-o` utiliza dependencias ya descargadas. Se ejecutó `npm test` con Node 24: **13 pruebas aprobadas**. Son resultados de esta revisión, no porcentaje de cobertura. La compilación Angular y `npm ci` se registraron en F10; no se repitieron como parte de esta revisión exclusivamente documental.
 
+Para validar este documento se comprobaron las rutas y anclas locales, los ejemplos aritméticos y los 26 bloques Mermaid. Cada diagrama se analizó y renderizó como SVG con el motor Mermaid incluido en IntelliJ, mediante Chromium local. Esto verifica la sintaxis y la generación de SVG en ese entorno; la presentación exacta en GitHub depende de su versión de Mermaid. Los enlaces históricos remotos se contrastaron con el contenido disponible en Git local, sin una comprobación HTTP independiente.
+
 ### Relación entre pruebas y requisitos
 
 | Categoría | Pruebas o evidencia | Qué comprueban |
