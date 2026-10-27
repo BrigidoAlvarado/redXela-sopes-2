@@ -4,7 +4,7 @@ Proyecto final de Sistemas Operativos 2, CUNOC, segundo semestre de 2026.
 
 El [enunciado](docs/Proyecto_Final_Sistemas_Operativos_2.md) es la fuente principal de requisitos. La [propuesta de arquitectura](PROPUESTA_ARQUITECTURA.md) define el diseño aprobado.
 
-## Estado actual: F7
+## Estado actual: F8
 
 Implementados el arranque Spring Boot y Angular, el catálogo fijo de diez productos, los cinco tipos de mercancía, niveles de servicio, modelos de cliente/pedido, validaciones, creación y consulta en memoria, y rutas descriptivas por etapa.
 
@@ -16,7 +16,9 @@ F6 agrega generación automática de pedidos con el reloj simulado y una demostr
 
 F7 incorpora métricas de pedidos, niveles de servicio y ocupación de recursos por corrida. También permite comparar las tres políticas mediante una carga fija ejecutada en instancias aisladas.
 
-Angular contiene únicamente la aplicación raíz standalone. Aún no hay API de negocio ni formularios operativos; la generación automática y la demostración de deadlock ejecutable se controlan por servicios Java y pruebas hasta las fases de API e interfaz.
+F8 expone una API REST bajo `/api` y snapshots mediante STOMP/WebSocket en `/ws`, canal `/topic/estado`.
+
+Angular contiene únicamente la aplicación raíz standalone y todavía no tiene formularios operativos.
 
 ## Requisitos
 
@@ -36,7 +38,7 @@ Desde `backend/`:
 ./mvnw spring-boot:run
 ```
 
-En Windows se utiliza `mvnw.cmd`. El servidor arranca en `http://localhost:8080`; todavía no expone endpoints de negocio, por lo que una consulta a `/` devuelve 404. El artefacto ejecutable se genera en `backend/target/redxela-0.1.0.jar`.
+En Windows se utiliza `mvnw.cmd`. El servidor arranca en `http://localhost:8080`; la API comienza en `/api` y una consulta a `/` devuelve 404. El artefacto ejecutable se genera en `backend/target/redxela-0.1.0.jar`.
 
 El `pom.xml` se puede importar como proyecto Maven en IntelliJ, seleccionando JDK 21 y Maven Wrapper.
 En la terminal, `./mvnw -version` muestra el JDK que utiliza Maven; si `JAVA_HOME` está definido, debe apuntar al JDK 21.
@@ -58,6 +60,6 @@ Si se utiliza nvm, `nvm install` y `nvm use` leen `.nvmrc`. La aplicación de de
 
 La configuración inicial en `backend/src/main/resources/application.yml` es de cuatro trabajadores y un factor de 60: un segundo real equivale a 60 segundos simulados. Ambos valores pueden modificarse antes de arrancar Spring; la velocidad también puede cambiarse a través del servicio Java durante una corrida.
 
-Por ahora, los servicios se utilizan desde código Java y pruebas; no hay controles REST ni interfaz gráfica. El [manual técnico de F7](docs/manual-tecnico/F7.md) explica métricas y comparación. Los manuales de [F6](docs/manual-tecnico/F6.md), [F5](docs/manual-tecnico/F5.md), [F4](docs/manual-tecnico/F4.md), [F3](docs/manual-tecnico/F3.md), [F2](docs/manual-tecnico/F2.md) y [F1](docs/manual-tecnico/F1.md) detallan las fases anteriores.
+Los servicios se pueden controlar mediante REST; todavía no hay interfaz gráfica operativa. El [manual técnico de F8](docs/manual-tecnico/F8.md) documenta endpoints, JSON, WebSocket y ejemplos. Los manuales de [F7](docs/manual-tecnico/F7.md), [F6](docs/manual-tecnico/F6.md), [F5](docs/manual-tecnico/F5.md), [F4](docs/manual-tecnico/F4.md), [F3](docs/manual-tecnico/F3.md), [F2](docs/manual-tecnico/F2.md) y [F1](docs/manual-tecnico/F1.md) detallan las fases anteriores.
 
-La implementación se detiene en F7 hasta su revisión.
+La implementación se detiene en F8 hasta su revisión.
