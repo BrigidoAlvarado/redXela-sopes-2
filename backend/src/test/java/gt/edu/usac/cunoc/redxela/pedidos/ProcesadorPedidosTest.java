@@ -1,6 +1,7 @@
 package gt.edu.usac.cunoc.redxela.pedidos;
 
 import gt.edu.usac.cunoc.redxela.catalogo.CatalogoProductos;
+import gt.edu.usac.cunoc.redxela.inventario.InventarioService;
 import gt.edu.usac.cunoc.redxela.catalogo.NivelServicio;
 import gt.edu.usac.cunoc.redxela.clientes.ClienteService;
 import gt.edu.usac.cunoc.redxela.recursos.GestorRecursos;
@@ -25,6 +26,15 @@ class ProcesadorPedidosTest {
     private final ClienteService clientes = new ClienteService();
     private final PedidoService pedidos = new PedidoService(catalogo, clientes);
     private final GestorRecursos recursos = new GestorRecursos();
+    private final InventarioService inventario = inventarioInicial();
+
+    private static InventarioService inventarioInicial() {
+        var inventario = new InventarioService(new CatalogoProductos());
+        inventario.almacenar(java.util.UUID.randomUUID(), "GEN-01", 100);
+        inventario.almacenar(java.util.UUID.randomUUID(), "FRA-01", 100);
+        inventario.almacenar(java.util.UUID.randomUUID(), "PES-01", 100);
+        return inventario;
+    }
 
     private Pedido pedido(String producto, int unidades) {
         var cliente = clientes.registrar("Cliente", java.util.UUID.randomUUID() + "@ejemplo.com", NivelServicio.EXPRES);
@@ -35,7 +45,7 @@ class ProcesadorPedidosTest {
         var avisos = new Semaphore(0);
         recursos.registrarAvisos(avisos);
         try (var motor = new MotorSimulacion(2, 0.01);
-             var procesador = new ProcesadorPedidos(pedidos, motor, recursos)) {
+             var procesador = new ProcesadorPedidos(pedidos, motor, recursos, inventario)) {
             var a = pedido("GEN-01", 1);
             var b = pedido("FRA-01", 1);
             motor.iniciar();
@@ -61,7 +71,7 @@ class ProcesadorPedidosTest {
         var avisos = new Semaphore(0);
         recursos.registrarAvisos(avisos);
         try (var motor = new MotorSimulacion(1, 1_000_000);
-             var procesador = new ProcesadorPedidos(pedidos, motor, recursos);
+             var procesador = new ProcesadorPedidos(pedidos, motor, recursos, inventario);
              var bloqueo = recursos.intentarAsignar("prueba", new RequisitosRecursos(Map.of(ENCARGADO_BODEGA, 10))).orElseThrow()) {
             var p = pedido("GEN-01", 3);
             motor.iniciar();
@@ -95,7 +105,7 @@ class ProcesadorPedidosTest {
         var avisos = new Semaphore(0);
         recursos.registrarAvisos(avisos);
         try (var motor = new MotorSimulacion(1, 0.01);
-             var procesador = new ProcesadorPedidos(pedidos, motor, recursos)) {
+             var procesador = new ProcesadorPedidos(pedidos, motor, recursos, inventario)) {
             var p = pedido("GEN-01", 1);
             motor.iniciar();
             var resultado = procesador.procesar(p.id());
@@ -126,7 +136,7 @@ class ProcesadorPedidosTest {
         var avisos = new Semaphore(0);
         recursos.registrarAvisos(avisos);
         try (var motor = new MotorSimulacion(1, 60);
-             var procesador = new ProcesadorPedidos(pedidos, motor, recursos);
+             var procesador = new ProcesadorPedidos(pedidos, motor, recursos, inventario);
              var bloqueo = recursos.intentarAsignar("prueba", new RequisitosRecursos(Map.of(ENCARGADO_BODEGA, 10))).orElseThrow()) {
             var p = pedido("GEN-01", 1);
             motor.iniciar();

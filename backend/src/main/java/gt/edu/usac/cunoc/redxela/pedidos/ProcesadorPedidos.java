@@ -6,6 +6,7 @@ import gt.edu.usac.cunoc.redxela.simulacion.MotorSimulacion;
 import gt.edu.usac.cunoc.redxela.planificacion.PlanificadorPedidos;
 import gt.edu.usac.cunoc.redxela.planificacion.PoliticaPlanificacion;
 import gt.edu.usac.cunoc.redxela.catalogo.NivelServicio;
+import gt.edu.usac.cunoc.redxela.inventario.InventarioService;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -24,6 +25,7 @@ public final class ProcesadorPedidos implements AutoCloseable {
     private final PedidoService pedidos;
     private final MotorSimulacion motor;
     private final GestorRecursos recursos;
+    private final InventarioService inventario;
     private final Map<UUID, Ejecucion> ejecuciones = new LinkedHashMap<>();
     private final Semaphore aviso = new Semaphore(0);
     private final Thread coordinador;
@@ -31,12 +33,14 @@ public final class ProcesadorPedidos implements AutoCloseable {
     private PoliticaPlanificacion politica = PoliticaPlanificacion.PRIORIDAD;
     private Duration intervaloAging = Duration.ofMinutes(5);
 
-    public ProcesadorPedidos(PedidoService pedidos, MotorSimulacion motor, GestorRecursos recursos) {
+    public ProcesadorPedidos(PedidoService pedidos, MotorSimulacion motor, GestorRecursos recursos, InventarioService inventario) {
         this.pedidos = Objects.requireNonNull(pedidos, "Pedidos");
         this.motor = Objects.requireNonNull(motor, "Motor");
         this.recursos = Objects.requireNonNull(recursos, "Recursos");
+        this.inventario = Objects.requireNonNull(inventario, "Inventario");
         motor.registrarAvisos(aviso);
         recursos.registrarAvisos(aviso);
+        inventario.registrarAvisos(aviso);
         coordinador = new Thread(this::coordinar, "redxela-coordinador-pedidos");
         coordinador.setDaemon(true);
         coordinador.start();
@@ -91,13 +95,13 @@ public final class ProcesadorPedidos implements AutoCloseable {
             long ahora = estadoCorrida.tiempoSimulado();
             var comparador = PlanificadorPedidos.comparador(politica, intervaloAging);
             var ordenados = ejecuciones.values().stream()
-                    .filter(e -> e.corrida == estadoCorrida.corrida() && e.estado == EstadoPedido.ESPERANDO_RECURSOS)
+                    .filter(e -> e.corrida == estadoCorrida.corrida() && (e.estado == EstadoPedido.ESPERANDO_RECURSOS || e.estado == EstadoPedido.ESPERANDO_INVENTARIO))
                     .sorted((a, b) -> comparador.compare(candidato(a, ahora), candidato(b, ahora))).toList();
             var resultado = new ArrayList<EntradaCola>();
             for (int i = 0; i < ordenados.size(); i++) {
                 Ejecucion e = ordenados.get(i);
                 var c = candidato(e, ahora);
-                String motivo = e.enviado ? "Admitido; pendiente de inicio o recursos"
+                String motivo = e.estado == EstadoPedido.ESPERANDO_INVENTARIO ? "Inventario insuficiente" : e.enviado ? "Admitido; pendiente de inicio o recursos"
                         : e.versionBloqueada == version ? "Recursos insuficientes"
                         : "Esperando turno o trabajador";
                 Long prioridad = politica == PoliticaPlanificacion.AGING
@@ -145,9 +149,16 @@ public final class ProcesadorPedidos implements AutoCloseable {
                             && (e.corrida < corrida || (e.corrida == corrida &&
                             (estadoMotor == EstadoSimulacion.DETENIENDO || estadoMotor == EstadoSimulacion.DETENIDA)))) {
                         marcarError(e, e.corrida == corrida ? ahora : e.ultimoInstante, "Simulación detenida");
+                        inventario.cancelarReserva(e.pedido.id());
                         recursos.cancelarEspera(e.operacion());
                         if (!e.iniciado) cancelados.add(e.resultado);
                     }
+                }
+                // Se prueban reservas completas en el orden de la política; los pedidos sin stock no bloquean a otros.
+                if (estadoMotor == EstadoSimulacion.EJECUTANDO) {
+                    ejecuciones.values().stream().filter(e -> e.corrida == corrida && e.estado == EstadoPedido.ESPERANDO_INVENTARIO)
+                            .sorted((a, b) -> comparador.compare(candidato(a, ahora), candidato(b, ahora)))
+                            .forEach(e -> { if (inventario.reservar(e.pedido)) e.estado = EstadoPedido.ESPERANDO_RECURSOS; });
                 }
                 siguiente = estadoMotor != EstadoSimulacion.EJECUTANDO ? null : ejecuciones.values().stream()
                         .filter(e -> e.corrida == corrida && e.estado == EstadoPedido.ESPERANDO_RECURSOS && !e.enviado
@@ -196,6 +207,7 @@ public final class ProcesadorPedidos implements AutoCloseable {
             contexto.avanzar(() -> {
                 long ahora = motor.tiempoActual();
                 synchronized (this) {
+                    if (paso.etapa() == EtapaPedido.RETIRO) inventario.retirar(e.pedido.id(), paso.tipo());
                     e.procesamientoAcumulado += Math.max(0, ahora - e.inicioPaso);
                     e.ultimoInstante = ahora;
                     e.completados++;
@@ -217,6 +229,7 @@ public final class ProcesadorPedidos implements AutoCloseable {
             boolean fallo;
             synchronized (this) { fallo = e.estado == EstadoPedido.ERROR; }
             if (asignacion[0] != null || fallo) recursos.cancelarEspera(operacion);
+            if (fallo) inventario.cancelarReserva(e.pedido.id());
             long ahora = motor.tiempoActual();
             Progreso completado = null;
             String error = null;
@@ -258,7 +271,7 @@ public final class ProcesadorPedidos implements AutoCloseable {
                            Duration esperaAcumulada, Duration procesamientoAcumulado) { }
 
     private static long espera(Ejecucion e, long ahora) {
-        return e.esperaAcumulada + (e.estado == EstadoPedido.ESPERANDO_RECURSOS
+        return e.esperaAcumulada + (e.estado == EstadoPedido.ESPERANDO_RECURSOS || e.estado == EstadoPedido.ESPERANDO_INVENTARIO
                 ? Math.max(0, ahora - e.esperaDesde) : 0);
     }
 
@@ -280,7 +293,7 @@ public final class ProcesadorPedidos implements AutoCloseable {
         final PlanTrabajo plan;
         final long corrida;
         final CompletableFuture<Progreso> resultado = new CompletableFuture<>();
-        EstadoPedido estado = EstadoPedido.ESPERANDO_RECURSOS;
+        EstadoPedido estado = EstadoPedido.ESPERANDO_INVENTARIO;
         int completados;
         boolean enviado;
         boolean iniciado;
@@ -316,6 +329,7 @@ public final class ProcesadorPedidos implements AutoCloseable {
                     marcarError(e, e.corrida == estadoCorrida.corrida() ? estadoCorrida.tiempoSimulado() : e.ultimoInstante,
                             "Procesador cerrado");
                     recursos.cancelarEspera(e.operacion());
+                    inventario.cancelarReserva(e.pedido.id());
                 });
             }
             pendientes.forEach(e -> e.resultado.completeExceptionally(new IllegalStateException("Procesador cerrado")));
@@ -325,6 +339,7 @@ public final class ProcesadorPedidos implements AutoCloseable {
         } finally {
             motor.retirarAvisos(aviso);
             recursos.retirarAvisos(aviso);
+            inventario.retirarAvisos(aviso);
         }
     }
 }

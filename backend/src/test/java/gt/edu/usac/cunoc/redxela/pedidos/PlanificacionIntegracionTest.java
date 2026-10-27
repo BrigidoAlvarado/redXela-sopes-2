@@ -1,6 +1,7 @@
 package gt.edu.usac.cunoc.redxela.pedidos;
 
 import gt.edu.usac.cunoc.redxela.catalogo.CatalogoProductos;
+import gt.edu.usac.cunoc.redxela.inventario.InventarioService;
 import gt.edu.usac.cunoc.redxela.catalogo.NivelServicio;
 import gt.edu.usac.cunoc.redxela.clientes.ClienteService;
 import gt.edu.usac.cunoc.redxela.planificacion.PoliticaPlanificacion;
@@ -29,6 +30,15 @@ class PlanificacionIntegracionTest {
     private final ClienteService clientes = new ClienteService();
     private final PedidoService pedidos = new PedidoService(new CatalogoProductos(), clientes);
     private final GestorRecursos recursos = new GestorRecursos();
+    private final InventarioService inventario = inventarioInicial();
+
+    private static InventarioService inventarioInicial() {
+        var inventario = new InventarioService(new CatalogoProductos());
+        inventario.almacenar(java.util.UUID.randomUUID(), "GEN-01", 100);
+        inventario.almacenar(java.util.UUID.randomUUID(), "FRA-01", 100);
+        inventario.almacenar(java.util.UUID.randomUUID(), "PES-01", 100);
+        return inventario;
+    }
 
     private Pedido pedido(NivelServicio nivel, int unidades, String producto) {
         var cliente = clientes.registrar("Cliente", UUID.randomUUID() + "@ejemplo.com", nivel);
@@ -40,7 +50,7 @@ class PlanificacionIntegracionTest {
         var motor = control.motor();
         var ocupado = new CountDownLatch(1);
         var liberar = new CountDownLatch(1);
-        try (motor; var procesador = new ProcesadorPedidos(pedidos, motor, recursos)) {
+        try (motor; var procesador = new ProcesadorPedidos(pedidos, motor, recursos, inventario)) {
             motor.iniciar();
             motor.enviarTrabajo(contexto -> { ocupado.countDown(); liberar.await(); });
             assertTrue(ocupado.await(10, TimeUnit.SECONDS));
@@ -76,7 +86,7 @@ class PlanificacionIntegracionTest {
         var ocupado = new CountDownLatch(1);
         var liberar = new CountDownLatch(1);
         try (var motor = new MotorSimulacion(1, 0.01);
-             var procesador = new ProcesadorPedidos(pedidos, motor, recursos)) {
+             var procesador = new ProcesadorPedidos(pedidos, motor, recursos, inventario)) {
             motor.iniciar();
             motor.enviarTrabajo(contexto -> { ocupado.countDown(); liberar.await(); });
             assertTrue(ocupado.await(10, TimeUnit.SECONDS));
@@ -110,7 +120,7 @@ class PlanificacionIntegracionTest {
         var ocupado = new CountDownLatch(1);
         var liberar = new CountDownLatch(1);
         try (var motor = new MotorSimulacion(1, 0.01);
-             var procesador = new ProcesadorPedidos(pedidos, motor, recursos);
+             var procesador = new ProcesadorPedidos(pedidos, motor, recursos, inventario);
              var bloqueo = recursos.intentarAsignar("externo", new RequisitosRecursos(Map.of(MONTACARGAS, 3))).orElseThrow()) {
             motor.iniciar();
             motor.enviarTrabajo(contexto -> { ocupado.countDown(); liberar.await(); });
@@ -138,7 +148,7 @@ class PlanificacionIntegracionTest {
         var avisos = new Semaphore(0);
         recursos.registrarAvisos(avisos);
         motor.registrarAvisos(avisos);
-        try (motor; var procesador = new ProcesadorPedidos(pedidos, motor, recursos);
+        try (motor; var procesador = new ProcesadorPedidos(pedidos, motor, recursos, inventario);
              var bloqueo = recursos.intentarAsignar("externo", new RequisitosRecursos(Map.of(ENCARGADO_BODEGA, 10))).orElseThrow()) {
             motor.iniciar();
             procesador.cambiarPolitica(PoliticaPlanificacion.AGING);
@@ -172,7 +182,7 @@ class PlanificacionIntegracionTest {
 
     @RepeatedTest(10) void pedidosCompletanCadaPasoUnaVezConPoliticaActiva() throws Exception {
         try (var motor = new MotorSimulacion(2, 1_000_000);
-             var procesador = new ProcesadorPedidos(pedidos, motor, recursos)) {
+             var procesador = new ProcesadorPedidos(pedidos, motor, recursos, inventario)) {
             motor.iniciar();
             procesador.cambiarPolitica(AGING);
             var general = pedido(ECONOMICO, 2, "GEN-01");
