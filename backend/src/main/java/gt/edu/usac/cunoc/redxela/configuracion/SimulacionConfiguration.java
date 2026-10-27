@@ -9,7 +9,7 @@ import org.springframework.context.annotation.Configuration;
 @Configuration(proxyBeanMethods = false)
 public class SimulacionConfiguration {
     @Bean
-    GestorRecursos gestorRecursos() { return new GestorRecursos(); }
+    GestorRecursos gestorRecursos(MotorSimulacion motor) { return new GestorRecursos(motor.relojMedicion()); }
 
     @Bean(destroyMethod = "close")
     MotorSimulacion motorSimulacion(

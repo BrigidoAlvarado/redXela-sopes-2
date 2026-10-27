@@ -135,6 +135,7 @@ public final class DemostracionDeadlock implements AutoCloseable {
             contexto.avanzar(() -> recursos.anunciarEsperaFisica(operacion, segundo));
             segundoRecurso = recursos.adquirirFisicoEsperado(operacion, segundo); // Espera real en el semáforo.
             adquiridoGanador.countDown();
+            contexto.avanzar(() -> procesador.iniciarTrabajoConflicto(pedido, motor.tiempoActual()));
             contexto.esperar(ProcesadorPedidos.duracion(paso));
             contexto.avanzar(() -> procesador.completarDespachoConflicto(pedido, motor.tiempoActual()));
             synchronized (this) { if (pedido.equals(ganador)) ganadorTerminado.countDown(); }

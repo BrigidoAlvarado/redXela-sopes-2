@@ -9,6 +9,8 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.function.Supplier;
+import gt.edu.usac.cunoc.redxela.simulacion.RelojSimulado;
 
 /** Administra unidades físicas con semáforos binarios y asignaciones atómicas. */
 public final class GestorRecursos {
@@ -17,12 +19,17 @@ public final class GestorRecursos {
     private final Map<String, String> esperandoFisico = new LinkedHashMap<>();
     private final CopyOnWriteArraySet<Semaphore> avisos = new CopyOnWriteArraySet<>();
     private long version;
+    private final Supplier<RelojSimulado.Foto> reloj;
+    private long corridaMedida = -1;
 
     public void registrarAvisos(Semaphore aviso) { avisos.add(Objects.requireNonNull(aviso)); }
     public void retirarAvisos(Semaphore aviso) { avisos.remove(aviso); }
     public synchronized long version() { return version; }
 
-    public GestorRecursos() {
+    public GestorRecursos() { this(() -> new RelojSimulado.Foto(0, 0)); }
+
+    public GestorRecursos(Supplier<RelojSimulado.Foto> reloj) {
+        this.reloj = Objects.requireNonNull(reloj);
         for (TipoRecurso tipo : TipoRecurso.values()) {
             var lista = new ArrayList<Unidad>();
             for (int i = 1; i <= tipo.capacidad(); i++) {
@@ -59,7 +66,8 @@ public final class GestorRecursos {
                 return Optional.empty();
             }
         }
-        tomadas.forEach(u -> u.propietario = operacion);
+        var foto = actualizarReloj();
+        tomadas.forEach(u -> { u.propietario = operacion; u.inicioOcupacion = foto.tiempo(); });
         esperando.remove(operacion);
         avisos.forEach(Semaphore::release);
         return Optional.of(new Asignacion(operacion, tomadas));
@@ -81,7 +89,9 @@ public final class GestorRecursos {
         Unidad unidad = unidad(id);
         if (unidad.reservadoPara != null && !unidad.reservadoPara.equals(operacion)) return Optional.empty();
         if (!unidad.permiso.tryAcquire()) return Optional.empty();
+        var foto = actualizarReloj();
         unidad.propietario = operacion;
+        unidad.inicioOcupacion = foto.tiempo();
         avisos.forEach(Semaphore::release);
         return Optional.of(new Asignacion(operacion, List.of(unidad)));
     }
@@ -110,8 +120,11 @@ public final class GestorRecursos {
         try {
             // acquire bloquea realmente el hilo hasta liberar la unidad o interrumpir la espera.
             unidad.permiso.acquire();
+            var adquirida = reloj.get();
             synchronized (this) {
+                var foto = actualizarReloj();
                 unidad.propietario = operacion;
+                unidad.inicioOcupacion = adquirida.corrida() == foto.corrida() ? adquirida.tiempo() : 0;
                 cancelarEspera(operacion);
                 avisos.forEach(Semaphore::release);
                 return new Asignacion(operacion, List.of(unidad));
@@ -142,12 +155,37 @@ public final class GestorRecursos {
 
     public record EstadoUnidad(String id, TipoRecurso tipo, String propietario) { }
 
+    private RelojSimulado.Foto actualizarReloj() {
+        var foto = reloj.get();
+        if (foto.corrida() != corridaMedida) {
+            corridaMedida = foto.corrida();
+            for (var lista : unidades.values()) for (var u : lista) {
+                u.ocupadoAcumulado = 0;
+                u.inicioOcupacion = 0;
+            }
+        }
+        return foto;
+    }
+
+    public synchronized FotoOcupacion ocupacion() {
+        var foto = actualizarReloj();
+        var lista = unidades.values().stream().flatMap(List::stream).map(u -> new Ocupacion(u.id, u.tipo,
+                u.ocupadoAcumulado + (u.propietario == null ? 0 : Math.max(0, foto.tiempo() - u.inicioOcupacion))))
+                .toList();
+        return new FotoOcupacion(foto.corrida(), foto.tiempo(), lista);
+    }
+
+    public record Ocupacion(String id, TipoRecurso tipo, long nanosOcupados) { }
+    public record FotoOcupacion(long corrida, long tiempo, List<Ocupacion> unidades) { }
+
     private static final class Unidad {
         final String id;
         final TipoRecurso tipo;
         final Semaphore permiso = new Semaphore(1);
         String propietario;
         String reservadoPara;
+        long inicioOcupacion;
+        long ocupadoAcumulado;
         Unidad(String id, TipoRecurso tipo) { this.id = id; this.tipo = tipo; }
     }
 
@@ -165,7 +203,9 @@ public final class GestorRecursos {
             synchronized (GestorRecursos.this) {
                 if (cerrada) return;
                 cerrada = true;
+                var foto = actualizarReloj();
                 for (Unidad unidad : tomadas) {
+                    unidad.ocupadoAcumulado += Math.max(0, foto.tiempo() - unidad.inicioOcupacion);
                     unidad.propietario = null;
                     unidad.permiso.release();
                 }

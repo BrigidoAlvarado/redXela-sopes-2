@@ -95,11 +95,20 @@ public final class ProcesadorPedidos implements AutoCloseable {
     public synchronized PasoTrabajo iniciarDespachoConflicto(UUID id, long ahora) {
         if (!listoParaConflicto(id)) throw new IllegalStateException("Despacho no disponible");
         Ejecucion e = ejecuciones.get(id);
-        e.esperaAcumulada = espera(e, ahora);
-        e.inicioPaso = ahora; e.ultimoInstante = ahora;
-        e.estado = EstadoPedido.EN_PROCESO; e.enviado = true; e.iniciado = true;
+        // El despacho todavía espera sus recursos; el deadlock no es trabajo efectivo.
+        e.estado = EstadoPedido.ESPERANDO_RECURSOS; e.enviado = true; e.iniciado = true;
+        e.ultimoInstante = ahora;
         avisarExternos();
         return e.plan.pasos().get(e.completados);
+    }
+
+    public synchronized void iniciarTrabajoConflicto(UUID id, long ahora) {
+        Ejecucion e = ejecuciones.get(id);
+        if (e == null || !e.conflicto || e.estado != EstadoPedido.ESPERANDO_RECURSOS)
+            throw new IllegalStateException("Despacho de conflicto no está esperando");
+        e.esperaAcumulada = espera(e, ahora);
+        e.inicioPaso = ahora; e.ultimoInstante = ahora; e.estado = EstadoPedido.EN_PROCESO;
+        avisarExternos();
     }
 
     /** Confirma únicamente la etapa de despacho ganadora; no vuelve a retirar inventario. */
@@ -135,11 +144,9 @@ public final class ProcesadorPedidos implements AutoCloseable {
     public void esperarDespachoConflicto(UUID id, long ahora) {
         synchronized (this) {
             Ejecucion e = ejecuciones.get(id);
-            if (e == null || e.estado != EstadoPedido.EN_PROCESO || !e.conflicto)
+            if (e == null || e.estado != EstadoPedido.ESPERANDO_RECURSOS || !e.conflicto)
                 throw new IllegalStateException("Operación de conflicto no disponible");
-            e.procesamientoAcumulado += Math.max(0, ahora - e.inicioPaso);
-            e.estado = EstadoPedido.ESPERANDO_RECURSOS;
-            e.esperaDesde = ahora; e.enviado = false; e.iniciado = false;
+            e.enviado = false; e.iniciado = false;
         }
         aviso.release(); avisarExternos();
     }
@@ -296,6 +303,7 @@ public final class ProcesadorPedidos implements AutoCloseable {
                         e.inicioPaso = ahora;
                         e.ultimoInstante = ahora;
                         e.estado = EstadoPedido.EN_PROCESO;
+                        avisarExternos();
                     }
                 }
             });
@@ -368,6 +376,21 @@ public final class ProcesadorPedidos implements AutoCloseable {
                            int pasosTotales, double porcentaje, List<String> recursos,
                            Duration restanteEstimado, String error, Duration primeraAtencion,
                            Duration esperaAcumulada, Duration procesamientoAcumulado) { }
+
+    /** Copia breve bajo el monitor; los cálculos estadísticos se realizan fuera de él. */
+    public synchronized List<DatoMetrica> datosMetricas(long corrida, long ahora) {
+        return ejecuciones.values().stream().filter(e -> e.corrida == corrida).map(e -> new DatoMetrica(
+                e.pedido.id(), e.pedido.nivelServicio(), e.estado,
+                e.primeraAtencion < 0 ? null : Duration.ofNanos(e.primeraAtencion),
+                Duration.ofNanos(espera(e, ahora)),
+                Duration.ofNanos(e.procesamientoAcumulado + (e.estado == EstadoPedido.EN_PROCESO
+                        ? Math.max(0, ahora - e.inicioPaso) : 0)),
+                e.estado == EstadoPedido.COMPLETADO ? Duration.ofNanos(Math.max(0, e.ultimoInstante - e.llegada)) : null,
+                Duration.ofNanos(Math.max(0, ahora - e.llegada)))).toList();
+    }
+
+    public record DatoMetrica(UUID pedidoId, NivelServicio nivel, EstadoPedido estado, Duration primeraAtencion,
+                              Duration espera, Duration procesamiento, Duration total, Duration desdeLlegada) { }
 
     private static long espera(Ejecucion e, long ahora) {
         return e.esperaAcumulada + (e.estado == EstadoPedido.ESPERANDO_RECURSOS || e.estado == EstadoPedido.ESPERANDO_INVENTARIO

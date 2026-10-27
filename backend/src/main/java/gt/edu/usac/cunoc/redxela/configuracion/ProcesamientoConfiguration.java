@@ -12,6 +12,8 @@ import gt.edu.usac.cunoc.redxela.recepcion.RecepcionService;
 import gt.edu.usac.cunoc.redxela.conflicto.DemostracionDeadlock;
 import gt.edu.usac.cunoc.redxela.pedidos.GeneradorPedidos;
 import gt.edu.usac.cunoc.redxela.clientes.ClienteService;
+import gt.edu.usac.cunoc.redxela.metricas.MetricasService;
+import gt.edu.usac.cunoc.redxela.metricas.ComparacionPoliticas;
 
 @Configuration(proxyBeanMethods = false)
 public class ProcesamientoConfiguration {
@@ -37,4 +39,10 @@ public class ProcesamientoConfiguration {
     DemostracionDeadlock demostracionDeadlock(MotorSimulacion motor, ProcesadorPedidos procesador, GestorRecursos recursos) {
         return new DemostracionDeadlock(motor, procesador, recursos);
     }
+
+    @Bean MetricasService metricasService(MotorSimulacion motor, ProcesadorPedidos procesador, GestorRecursos recursos) {
+        return new MetricasService(motor, procesador, recursos);
+    }
+
+    @Bean ComparacionPoliticas comparacionPoliticas() { return new ComparacionPoliticas(); }
 }

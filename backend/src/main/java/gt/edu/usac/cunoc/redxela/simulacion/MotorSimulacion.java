@@ -202,6 +202,16 @@ public final class MotorSimulacion implements AutoCloseable {
 
     public record EstadoCorrida(EstadoSimulacion estado, long corrida, long tiempoSimulado) { }
 
+    /** El reloj tiene su propio monitor, evitando invertir el orden entre motor y recursos. */
+    public java.util.function.Supplier<RelojSimulado.Foto> relojMedicion() { return reloj::foto; }
+
+    /** Obtiene una copia coherente con las transiciones que usan la puerta del motor. */
+    public <T> T conEstado(java.util.function.Function<EstadoCorrida, T> lectura) {
+        lock.lock();
+        try { return lectura.apply(new EstadoCorrida(estado, corrida, reloj.tiempoActual())); }
+        finally { lock.unlock(); }
+    }
+
     /** Un paso breve de un servicio independiente comparte la puerta de pausa del motor. */
     public boolean avanzarSiEjecutando(Runnable paso) throws InterruptedException {
         return avanzarSiEjecutando(-1, paso);

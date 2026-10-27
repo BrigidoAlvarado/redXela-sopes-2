@@ -10,6 +10,11 @@ public final class RelojSimulado {
     private double nanosAcumulados;
     private long referenciaReal;
     private boolean avanzando;
+    private long corrida;
+
+    public record Foto(long corrida, long tiempo) { }
+
+    public synchronized Foto foto() { return new Foto(corrida, tiempoActual()); }
 
     public RelojSimulado(double factor) {
         this(factor, System::nanoTime);
@@ -32,6 +37,7 @@ public final class RelojSimulado {
     public synchronized double factor() { return factor; }
 
     synchronized void iniciar() {
+        corrida++;
         nanosAcumulados = 0;
         referenciaReal = fuenteNanos.getAsLong();
         avanzando = true;
