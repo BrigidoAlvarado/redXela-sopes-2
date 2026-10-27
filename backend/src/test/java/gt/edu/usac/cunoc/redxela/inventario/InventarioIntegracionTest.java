@@ -105,7 +105,8 @@ class InventarioIntegracionTest {
             recepcion.registrarAvisos(avisos);
             motor.iniciar();
             var id = recepcion.registrar("GEN-01", 2);
-            esperar(avisos, () -> recursos.esperando().containsKey("recepcion:" + id));
+            esperar(avisos, () -> recursos.esperando().containsKey("recepcion:" + id)
+                    && recepcion.consultar(id).estado() == RecepcionService.Estado.ESPERANDO_ESCANER);
             assertEquals("S01", despacho.recursos().getFirst());
             assertEquals(RecepcionService.Estado.ESPERANDO_ESCANER, recepcion.consultar(id).estado());
             assertThrows(RejectedExecutionException.class, () -> recepcion.registrar("GEN-02", 1));
@@ -168,6 +169,10 @@ class InventarioIntegracionTest {
             esperar(avisos, () -> ids.stream().allMatch(id -> recepcion.consultar(id).estado() == RecepcionService.Estado.ALMACENADA));
             assertEquals(20, inventario.existencia("GEN-01").fisico());
             assertEquals(20, inventario.ubicaciones().stream().flatMap(u -> u.fragmentos().stream()).count());
+            motor.detener(); // Espera el fin físico de los trabajadores antes de inspeccionar el registro.
+            var campo = RecepcionService.class.getDeclaredField("trabajos");
+            campo.setAccessible(true);
+            synchronized (recepcion) { assertTrue(((Map<?, ?>) campo.get(recepcion)).isEmpty()); }
         }
     }
 
@@ -225,6 +230,113 @@ class InventarioIntegracionTest {
             assertEquals(RecepcionService.Estado.ERROR, recepcion.consultar(id).estado());
             assertEquals(0, inventario.existencia("GEN-01").fisico());
         } finally { recursos.retirarAvisos(avisos); }
+    }
+
+    @Test void pausaNoAlmacenaPendientesAunqueSeLibereEspacio() throws Exception {
+        ingreso("GEN-01", 1000);
+        var avisos = new Semaphore(0);
+        try (var motor = new MotorSimulacion(2, 1_000_000);
+             var recepcion = new RecepcionService(catalogo, inventario, recursos, motor, 2)) {
+            recepcion.registrarAvisos(avisos); motor.iniciar();
+            var id = recepcion.registrar("GEN-02", 5);
+            esperar(avisos, () -> recepcion.consultar(id).estado() == RecepcionService.Estado.PENDIENTE_ESPACIO
+                    && recepcion.consultar(id).detalle() != null);
+            motor.pausar();
+            var pedido = pedido(linea("GEN-01", 5));
+            assertTrue(inventario.reservar(pedido));
+            inventario.retirar(pedido.id(), TipoMercancia.GENERAL);
+            assertFalse(motor.avanzarSiEjecutando(() -> fail("Se avanzó durante la pausa")));
+            assertEquals(RecepcionService.Estado.PENDIENTE_ESPACIO, recepcion.consultar(id).estado());
+            assertEquals(0, inventario.existencia("GEN-02").fisico());
+            motor.reanudar();
+            esperar(avisos, () -> recepcion.consultar(id).estado() == RecepcionService.Estado.ALMACENADA);
+            assertEquals(5, inventario.existencia("GEN-02").fisico());
+        }
+    }
+
+    @Test void detenerMientrasSeEscaneaReintentaSinDuplicar() throws Exception {
+        var avisos = new Semaphore(0);
+        recursos.registrarAvisos(avisos);
+        try (var motor = new MotorSimulacion(1, 0.01);
+             var recepcion = new RecepcionService(catalogo, inventario, recursos, motor, 2)) {
+            recepcion.registrarAvisos(avisos); motor.iniciar();
+            var id = recepcion.registrar("GEN-01", 3);
+            esperar(avisos, () -> recursos.estado().stream().anyMatch(u -> ("recepcion:" + id).equals(u.propietario())));
+            motor.detener();
+            assertEquals(0, inventario.existencia("GEN-01").fisico());
+            assertEquals(1, recursos.disponibles(TipoRecurso.ESCANER));
+            motor.cambiarVelocidad(1_000_000); motor.iniciar();
+            esperar(avisos, () -> recepcion.consultar(id).estado() == RecepcionService.Estado.ALMACENADA);
+            assertEquals(3, cantidadLote(id));
+            assertEquals(3, inventario.existencia("GEN-01").fisico());
+        } finally { recursos.retirarAvisos(avisos); }
+    }
+
+    @Test void detenerDespuesDePublicarConservaMensajeSinDuplicar() throws Exception {
+        ingreso("GEN-01", 1000);
+        var avisos = new Semaphore(0);
+        try (var motor = new MotorSimulacion(2, 1_000_000);
+             var recepcion = new RecepcionService(catalogo, inventario, recursos, motor, 2)) {
+            recepcion.registrarAvisos(avisos); motor.iniciar();
+            var id = recepcion.registrar("GEN-02", 5);
+            esperar(avisos, () -> recepcion.consultar(id).estado() == RecepcionService.Estado.PENDIENTE_ESPACIO
+                    && recepcion.consultar(id).detalle() != null);
+            motor.detener();
+            var pedido = pedido(linea("GEN-01", 5));
+            assertTrue(inventario.reservar(pedido));
+            inventario.retirar(pedido.id(), TipoMercancia.GENERAL);
+            assertEquals(0, inventario.existencia("GEN-02").fisico());
+            assertEquals(RecepcionService.Estado.PENDIENTE_ESPACIO, recepcion.consultar(id).estado());
+            motor.iniciar();
+            esperar(avisos, () -> recepcion.consultar(id).estado() == RecepcionService.Estado.ALMACENADA);
+            assertEquals(5, cantidadLote(id));
+            assertEquals(5, inventario.existencia("GEN-02").fisico());
+        }
+    }
+
+    @Test void detenerDurantePublicacionNoDuplicaElMensaje() throws Exception {
+        var avisos = new Semaphore(0);
+        recursos.registrarAvisos(avisos);
+        try (var motor = new MotorSimulacion(1, 0.01);
+             var recepcion = new RecepcionService(catalogo, inventario, recursos, motor, 2);
+             var controlador = Executors.newSingleThreadExecutor()) {
+            recepcion.registrarAvisos(avisos); motor.iniciar();
+            var id = recepcion.registrar("GEN-01", 4);
+            esperar(avisos, () -> recursos.estado().stream().anyMatch(u -> ("recepcion:" + id).equals(u.propietario())));
+            Future<?> detener;
+            synchronized (recepcion) {
+                motor.cambiarVelocidad(1_000_000);
+                // El trabajador queda a la entrada de la publicación, dentro de la puerta del motor.
+                esperarBloqueoDePublicacion(recepcion);
+                var inicioDetencion = new CountDownLatch(1);
+                detener = controlador.submit(() -> { inicioDetencion.countDown(); motor.detener(); return null; });
+                assertTrue(inicioDetencion.await(5, TimeUnit.SECONDS));
+            }
+            detener.get(10, TimeUnit.SECONDS);
+            motor.iniciar();
+            esperar(avisos, () -> recepcion.consultar(id).estado() == RecepcionService.Estado.ALMACENADA);
+            assertEquals(4, cantidadLote(id));
+            assertEquals(4, inventario.existencia("GEN-01").fisico());
+        } finally { recursos.retirarAvisos(avisos); }
+    }
+
+    private static void esperarBloqueoDePublicacion(RecepcionService recepcion) {
+        var gestor = java.lang.management.ManagementFactory.getThreadMXBean();
+        long limite = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (System.nanoTime() < limite) {
+            for (var info : gestor.dumpAllThreads(false, false)) {
+                if (info.getThreadName().startsWith("redxela-corrida-")
+                        && info.getThreadState() == Thread.State.BLOCKED && info.getLockInfo() != null
+                        && info.getLockInfo().getIdentityHashCode() == System.identityHashCode(recepcion)) return;
+            }
+            Thread.yield();
+        }
+        fail("El trabajador no llegó al punto de publicación");
+    }
+
+    private int cantidadLote(UUID id) {
+        return inventario.ubicaciones().stream().flatMap(u -> u.fragmentos().stream())
+                .filter(f -> f.lote().equals(id)).mapToInt(InventarioService.Fragmento::cantidad).sum();
     }
 
     private static void esperar(Semaphore avisos, BooleanSupplier condicion) throws Exception {

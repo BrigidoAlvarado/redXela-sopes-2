@@ -173,6 +173,17 @@ public final class MotorSimulacion implements AutoCloseable {
 
     public record EstadoCorrida(EstadoSimulacion estado, long corrida, long tiempoSimulado) { }
 
+    /** Un paso breve de un servicio independiente comparte la puerta de pausa del motor. */
+    public boolean avanzarSiEjecutando(Runnable paso) throws InterruptedException {
+        Objects.requireNonNull(paso, "Paso de progreso");
+        lock.lockInterruptibly();
+        try {
+            if (estado != EstadoSimulacion.EJECUTANDO) return false;
+            paso.run();
+            return true;
+        } finally { lock.unlock(); }
+    }
+
     public long corridaActual() {
         lock.lock();
         try { return corrida; } finally { lock.unlock(); }

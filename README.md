@@ -2,7 +2,7 @@
 
 Proyecto final de Sistemas Operativos 2, CUNOC, segundo semestre de 2026.
 
-El [enunciado](.docs/Proyecto_Final_Sistemas_Operativos_2.md) es la fuente principal de requisitos. La [propuesta de arquitectura](PROPUESTA_ARQUITECTURA.md) define el diseño aprobado.
+El [enunciado](docs/Proyecto_Final_Sistemas_Operativos_2.md) es la fuente principal de requisitos. La [propuesta de arquitectura](PROPUESTA_ARQUITECTURA.md) define el diseño aprobado.
 
 ## Estado actual: F5
 

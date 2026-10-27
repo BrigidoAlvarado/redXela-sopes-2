@@ -25,6 +25,10 @@ public final class RecepcionService implements AutoCloseable {
         long versionBloqueada = -1;
         Registro(IngresoMercaderia ingreso, long corrida) { this.ingreso = ingreso; this.corrida = corrida; }
     }
+    private static final class TrabajoRecepcion {
+        Future<?> futuro;
+        boolean terminado;
+    }
     private final CatalogoProductos catalogo;
     private final InventarioService inventario;
     private final GestorRecursos recursos;
@@ -32,7 +36,7 @@ public final class RecepcionService implements AutoCloseable {
     private final int capacidad;
     private final BlockingQueue<IngresoMercaderia> cola;
     private final Map<UUID, Registro> registros = new LinkedHashMap<>();
-    private final Map<UUID, Future<?>> trabajos = new HashMap<>();
+    private final Map<UUID, TrabajoRecepcion> trabajos = new HashMap<>();
     private final Semaphore avisoRecepcion = new Semaphore(0), avisoInventario = new Semaphore(0);
     private final CopyOnWriteArraySet<Semaphore> avisos = new CopyOnWriteArraySet<>();
     private final Thread productor, consumidor;
@@ -48,6 +52,7 @@ public final class RecepcionService implements AutoCloseable {
         this.recursos = Objects.requireNonNull(recursos); this.motor = Objects.requireNonNull(motor);
         this.capacidad = capacidad; this.cola = new ArrayBlockingQueue<>(capacidad);
         motor.registrarAvisos(avisoRecepcion); recursos.registrarAvisos(avisoRecepcion);
+        motor.registrarAvisos(avisoInventario);
         inventario.registrarAvisos(avisoInventario);
         productor = new Thread(this::producir, "redxela-recepcion");
         consumidor = new Thread(this::consumir, "redxela-control-inventario");
@@ -87,6 +92,8 @@ public final class RecepcionService implements AutoCloseable {
                     long version = recursos.version();
                     Registro r;
                     synchronized (this) {
+                        // También se retiran tareas canceladas antes de llegar a ejecutar su código.
+                        trabajos.values().removeIf(t -> t.futuro.isDone());
                         for (Registro registro : registros.values()) {
                             if ((registro.estado == Estado.ESPERANDO_ESCANER || registro.estado == Estado.ESCANEANDO)
                                     && (registro.corrida != corrida.corrida() || corrida.estado() == EstadoSimulacion.DETENIDA
@@ -106,10 +113,22 @@ public final class RecepcionService implements AutoCloseable {
                     }
                     if (r == null) break;
                     try {
-                        Future<?> trabajo = motor.enviarTrabajo(r.corrida, contexto -> escanear(r, contexto));
+                        var intento = new TrabajoRecepcion();
+                        Future<?> trabajo = motor.enviarTrabajo(r.corrida, contexto -> {
+                            try { escanear(r, contexto); }
+                            finally {
+                                synchronized (this) {
+                                    intento.terminado = true;
+                                    trabajos.remove(r.ingreso.id(), intento);
+                                }
+                            }
+                        });
                         synchronized (this) {
                             if (cerrado) trabajo.cancel(true);
-                            else trabajos.put(r.ingreso.id(), trabajo);
+                            else if (!intento.terminado && !trabajo.isDone()) {
+                                intento.futuro = trabajo;
+                                trabajos.put(r.ingreso.id(), intento);
+                            }
                         }
                     }
                     catch (RejectedExecutionException | IllegalStateException ex) {
@@ -175,22 +194,27 @@ public final class RecepcionService implements AutoCloseable {
         try {
             while (!cerrado) {
                 avisoInventario.acquire(); avisoInventario.drainPermits();
-                IngresoMercaderia mensaje;
-                while ((mensaje = cola.poll()) != null) {
-                    synchronized (this) { Registro r = registros.get(mensaje.id()); if (r.estado == Estado.EN_COLA) r.estado = Estado.PENDIENTE_ESPACIO; }
-                }
+                // La cola solo se extrae dentro de la puerta de progreso; una pausa nunca pierde mensajes.
+                if (!motor.avanzarSiEjecutando(() -> {
+                    IngresoMercaderia mensaje;
+                    while ((mensaje = cola.poll()) != null) {
+                        synchronized (this) { Registro r = registros.get(mensaje.id()); if (r.estado == Estado.EN_COLA) r.estado = Estado.PENDIENTE_ESPACIO; }
+                    }
+                })) continue;
                 List<Registro> pendientes;
                 synchronized (this) { pendientes = registros.values().stream().filter(r -> r.estado == Estado.PENDIENTE_ESPACIO).toList(); }
                 for (Registro r : pendientes) {
-                    try {
-                        boolean almacenada = inventario.almacenar(r.ingreso.id(), r.ingreso.producto(), r.ingreso.cantidad());
-                        synchronized (this) { if (almacenada) { r.estado = Estado.ALMACENADA; r.detalle = null; }
-                            else r.detalle = "Espacio insuficiente"; }
+                    // El almacén y el estado de recepción se confirman antes de que pausar retorne.
+                    if (!motor.avanzarSiEjecutando(() -> {
+                        try {
+                            boolean almacenada = inventario.almacenar(r.ingreso.id(), r.ingreso.producto(), r.ingreso.cantidad());
+                            synchronized (this) { if (almacenada) { r.estado = Estado.ALMACENADA; r.detalle = null; }
+                                else r.detalle = "Espacio insuficiente"; }
+                        } catch (RuntimeException ex) {
+                            synchronized (this) { r.estado = Estado.ERROR; r.detalle = ex.toString(); }
+                        }
                         avisar();
-                    } catch (RuntimeException ex) {
-                        synchronized (this) { r.estado = Estado.ERROR; r.detalle = ex.toString(); }
-                        avisar();
-                    }
+                    })) break;
                 }
             }
         } catch (InterruptedException ex) { Thread.currentThread().interrupt(); }
@@ -198,12 +222,16 @@ public final class RecepcionService implements AutoCloseable {
 
     @Override public void close() {
         cerrado = true; productor.interrupt(); consumidor.interrupt();
-        synchronized (this) { trabajos.values().forEach(f -> f.cancel(true)); }
+        synchronized (this) {
+            trabajos.values().forEach(t -> t.futuro.cancel(true));
+            trabajos.clear();
+        }
         try { productor.join(5000); consumidor.join(5000); }
         catch (InterruptedException ex) { Thread.currentThread().interrupt(); throw new IllegalStateException("Cierre interrumpido", ex); }
         if (productor.isAlive() || consumidor.isAlive()) throw new IllegalStateException("Áreas no terminaron");
         synchronized (this) { registros.values().stream().filter(r -> !terminal(r.estado)).forEach(r -> {
             r.estado = Estado.ERROR; r.detalle = "Recepción cerrada"; recursos.cancelarEspera("recepcion:" + r.ingreso.id()); }); }
-        motor.retirarAvisos(avisoRecepcion); recursos.retirarAvisos(avisoRecepcion); inventario.retirarAvisos(avisoInventario);
+        motor.retirarAvisos(avisoRecepcion); motor.retirarAvisos(avisoInventario);
+        recursos.retirarAvisos(avisoRecepcion); inventario.retirarAvisos(avisoInventario);
     }
 }
