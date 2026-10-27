@@ -19,6 +19,7 @@ public final class MotorSimulacion implements AutoCloseable {
     private EstadoSimulacion estado = EstadoSimulacion.DETENIDA;
     private long corrida;
     private EjecutorTrabajos ejecutor;
+    private EjecutorTrabajos ejecutorConflicto;
     private final CopyOnWriteArraySet<Semaphore> avisos = new CopyOnWriteArraySet<>();
 
     /** La señal solo despierta al coordinador; no ejecuta código dentro del lock del motor. */
@@ -109,24 +110,48 @@ public final class MotorSimulacion implements AutoCloseable {
         }
     }
 
+    /** Dos hilos reservados únicamente para la demostración, sin ocupar trabajadores de pedidos. */
+    public Future<Void> enviarTrabajoConflicto(long corridaEsperada, TrabajoSimulado trabajo) {
+        lock.lock();
+        try {
+            if (corrida != corridaEsperada) throw new IllegalStateException("Corrida anterior");
+            exigirEstado(EstadoSimulacion.EJECUTANDO);
+            if (ejecutorConflicto == null) ejecutorConflicto = new EjecutorTrabajos(2, corrida, this::avisar);
+            var contexto = new ContextoTrabajo(corrida);
+            return ejecutorConflicto.enviar(() -> {
+                contexto.avanzar(() -> { });
+                trabajo.ejecutar(contexto);
+                return null;
+            });
+        } finally { lock.unlock(); }
+    }
+
+    /** Espera de un hilo independiente con el mismo reloj y la misma puerta de pausa. */
+    public void esperarTiempo(long corridaEsperada, Duration duracion) throws InterruptedException {
+        new ContextoTrabajo(corridaEsperada).esperar(duracion);
+    }
+
     public void detener() throws InterruptedException {
         EjecutorTrabajos anterior;
+        EjecutorTrabajos conflictoAnterior;
         lock.lock();
         try {
             if (estado == EstadoSimulacion.DETENIDA) {
                 return;
             }
-            if (ejecutor.esTrabajadorActual()) {
+            if (ejecutor.esTrabajadorActual() || (ejecutorConflicto != null && ejecutorConflicto.esTrabajadorActual())) {
                 throw new IllegalStateException("Un trabajador no puede esperar su propia terminación");
             }
             reloj.pausar();
             estado = EstadoSimulacion.DETENIENDO;
             avisar();
             anterior = ejecutor;
+            conflictoAnterior = ejecutorConflicto;
             // Cancela antes de despertar: ningún trabajador puede completar el Future
             // al observar DETENIENDO entre la transición y la solicitud de cancelación.
             try {
                 anterior.cancelarYApagar();
+                if (conflictoAnterior != null) conflictoAnterior.cancelarYApagar();
             } finally {
                 cambio.signalAll();
             }
@@ -142,6 +167,9 @@ public final class MotorSimulacion implements AutoCloseable {
             if (!anterior.esperarTerminacion(plazoDetencion)) {
                 throw new IllegalStateException("Hay trabajadores sin terminar; la simulación continúa DETENIENDO");
             }
+            if (conflictoAnterior != null && !conflictoAnterior.esperarTerminacion(plazoDetencion)) {
+                throw new IllegalStateException("Hay operaciones de conflicto sin terminar");
+            }
         } catch (InterruptedException interrumpido) {
             Thread.currentThread().interrupt();
             throw interrumpido;
@@ -152,6 +180,7 @@ public final class MotorSimulacion implements AutoCloseable {
             // Otro detener concurrente puede haber terminado esta corrida y comenzado otra.
             if (ejecutor == anterior) {
                 ejecutor = null;
+                ejecutorConflicto = null;
                 estado = EstadoSimulacion.DETENIDA;
                 avisar();
             }
@@ -175,10 +204,14 @@ public final class MotorSimulacion implements AutoCloseable {
 
     /** Un paso breve de un servicio independiente comparte la puerta de pausa del motor. */
     public boolean avanzarSiEjecutando(Runnable paso) throws InterruptedException {
+        return avanzarSiEjecutando(-1, paso);
+    }
+
+    public boolean avanzarSiEjecutando(long corridaEsperada, Runnable paso) throws InterruptedException {
         Objects.requireNonNull(paso, "Paso de progreso");
         lock.lockInterruptibly();
         try {
-            if (estado != EstadoSimulacion.EJECUTANDO) return false;
+            if (estado != EstadoSimulacion.EJECUTANDO || (corridaEsperada >= 0 && corrida != corridaEsperada)) return false;
             paso.run();
             return true;
         } finally { lock.unlock(); }

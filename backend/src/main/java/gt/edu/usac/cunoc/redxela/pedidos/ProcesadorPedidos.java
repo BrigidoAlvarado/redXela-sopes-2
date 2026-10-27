@@ -6,6 +6,7 @@ import gt.edu.usac.cunoc.redxela.simulacion.MotorSimulacion;
 import gt.edu.usac.cunoc.redxela.planificacion.PlanificadorPedidos;
 import gt.edu.usac.cunoc.redxela.planificacion.PoliticaPlanificacion;
 import gt.edu.usac.cunoc.redxela.catalogo.NivelServicio;
+import gt.edu.usac.cunoc.redxela.catalogo.TipoMercancia;
 import gt.edu.usac.cunoc.redxela.inventario.InventarioService;
 
 import java.time.Duration;
@@ -19,6 +20,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.CopyOnWriteArraySet;
 
 /** Coordina etapas y selecciona sobre la misma colección de pedidos pendientes. */
 public final class ProcesadorPedidos implements AutoCloseable {
@@ -28,6 +30,10 @@ public final class ProcesadorPedidos implements AutoCloseable {
     private final InventarioService inventario;
     private final Map<UUID, Ejecucion> ejecuciones = new LinkedHashMap<>();
     private final Semaphore aviso = new Semaphore(0);
+    private final CopyOnWriteArraySet<Semaphore> avisosExternos = new CopyOnWriteArraySet<>();
+    public void registrarAvisos(Semaphore aviso) { avisosExternos.add(Objects.requireNonNull(aviso)); }
+    public void retirarAvisos(Semaphore aviso) { avisosExternos.remove(aviso); }
+    private void avisarExternos() { avisosExternos.forEach(Semaphore::release); }
     private final Thread coordinador;
     private volatile boolean cerrado;
     private PoliticaPlanificacion politica = PoliticaPlanificacion.PRIORIDAD;
@@ -58,7 +64,97 @@ public final class ProcesadorPedidos implements AutoCloseable {
             ejecuciones.put(id, ejecucion);
         }
         aviso.release();
+        avisarExternos();
         return ejecucion.resultado;
+    }
+
+    /** Aparta el siguiente despacho de dos pedidos sin repetir sus etapas anteriores. */
+    public synchronized void prepararConflicto(UUID a, UUID b) {
+        if (Objects.equals(a, b)) throw new IllegalArgumentException("Se necesitan dos pedidos distintos");
+        Ejecucion primero = ejecuciones.get(a), segundo = ejecuciones.get(b);
+        for (Ejecucion e : new Ejecucion[]{primero, segundo}) {
+            if (e == null || e.estado == EstadoPedido.COMPLETADO || e.estado == EstadoPedido.ERROR || e.conflicto
+                    || (e.enviado && e.plan.pasos().get(e.completados).etapa() == EtapaPedido.DESPACHO))
+                throw new IllegalStateException("Pedido no disponible para preparar su despacho");
+            var siguienteDespacho = e.plan.pasos().subList(e.completados, e.plan.pasos().size()).stream()
+                    .filter(p -> p.etapa() == EtapaPedido.DESPACHO).findFirst().orElseThrow();
+            if (siguienteDespacho.tipo() != TipoMercancia.GENERAL)
+                throw new IllegalArgumentException("La demostración usa despachos de mercancía general");
+        }
+        if (primero.corrida != segundo.corrida) throw new IllegalStateException("Pedidos de distintas corridas");
+        primero.conflicto = true; segundo.conflicto = true;
+        aviso.release(); avisarExternos();
+    }
+
+    public synchronized boolean listoParaConflicto(UUID id) {
+        Ejecucion e = ejecuciones.get(id);
+        return e != null && e.conflicto && !e.enviado && e.estado == EstadoPedido.ESPERANDO_RECURSOS
+                && e.plan.pasos().get(e.completados).etapa() == EtapaPedido.DESPACHO;
+    }
+
+    public synchronized PasoTrabajo iniciarDespachoConflicto(UUID id, long ahora) {
+        if (!listoParaConflicto(id)) throw new IllegalStateException("Despacho no disponible");
+        Ejecucion e = ejecuciones.get(id);
+        e.esperaAcumulada = espera(e, ahora);
+        e.inicioPaso = ahora; e.ultimoInstante = ahora;
+        e.estado = EstadoPedido.EN_PROCESO; e.enviado = true; e.iniciado = true;
+        avisarExternos();
+        return e.plan.pasos().get(e.completados);
+    }
+
+    /** Confirma únicamente la etapa de despacho ganadora; no vuelve a retirar inventario. */
+    public void completarDespachoConflicto(UUID id, long ahora) {
+        Ejecucion e;
+        Progreso resultado = null;
+        synchronized (this) {
+            e = ejecuciones.get(id);
+            if (e.estado != EstadoPedido.EN_PROCESO || !e.conflicto) throw new IllegalStateException("Despacho no está en conflicto");
+            e.procesamientoAcumulado += Math.max(0, ahora - e.inicioPaso);
+            e.ultimoInstante = ahora; e.completados++; e.conflicto = false; e.enviado = false; e.iniciado = false;
+            e.estado = e.completados == e.plan.pasos().size() ? EstadoPedido.COMPLETADO : EstadoPedido.ESPERANDO_RECURSOS;
+            if (e.estado == EstadoPedido.ESPERANDO_RECURSOS) e.esperaDesde = ahora;
+            else resultado = vista(e, ahora);
+        }
+        if (resultado != null) e.resultado.complete(resultado);
+        aviso.release(); avisarExternos();
+    }
+
+    public void devolverDespachoConflicto(UUID id, long ahora) {
+        synchronized (this) {
+            Ejecucion e = ejecuciones.get(id);
+            if (e == null || e.estado == EstadoPedido.ERROR || e.estado == EstadoPedido.COMPLETADO) return;
+            if (e.estado == EstadoPedido.EN_PROCESO && e.conflicto) {
+                e.estado = EstadoPedido.ESPERANDO_RECURSOS; e.esperaDesde = ahora;
+            }
+            e.conflicto = false; e.enviado = false; e.iniciado = false; e.versionBloqueada = -1;
+        }
+        aviso.release(); avisarExternos();
+    }
+
+    /** La víctima vuelve a la cola, pero espera a que termine la operación ganadora. */
+    public void esperarDespachoConflicto(UUID id, long ahora) {
+        synchronized (this) {
+            Ejecucion e = ejecuciones.get(id);
+            if (e == null || e.estado != EstadoPedido.EN_PROCESO || !e.conflicto)
+                throw new IllegalStateException("Operación de conflicto no disponible");
+            e.procesamientoAcumulado += Math.max(0, ahora - e.inicioPaso);
+            e.estado = EstadoPedido.ESPERANDO_RECURSOS;
+            e.esperaDesde = ahora; e.enviado = false; e.iniciado = false;
+        }
+        aviso.release(); avisarExternos();
+    }
+
+    public void cancelarDespachoConflicto(UUID id, String motivo) {
+        Ejecucion e;
+        synchronized (this) {
+            e = ejecuciones.get(id);
+            if (e == null || e.estado == EstadoPedido.COMPLETADO || !e.conflicto) return;
+            marcarError(e, e.ultimoInstante, motivo);
+            e.conflicto = false; e.enviado = false; e.iniciado = false;
+            inventario.cancelarReserva(id);
+        }
+        e.resultado.completeExceptionally(new IllegalStateException(motivo));
+        aviso.release(); avisarExternos();
     }
 
     public Progreso consultar(UUID id) {
@@ -101,7 +197,8 @@ public final class ProcesadorPedidos implements AutoCloseable {
             for (int i = 0; i < ordenados.size(); i++) {
                 Ejecucion e = ordenados.get(i);
                 var c = candidato(e, ahora);
-                String motivo = e.estado == EstadoPedido.ESPERANDO_INVENTARIO ? "Inventario insuficiente" : e.enviado ? "Admitido; pendiente de inicio o recursos"
+                String motivo = e.estado == EstadoPedido.ESPERANDO_INVENTARIO ? "Inventario insuficiente"
+                        : e.conflicto ? "Esperando la recuperación del despacho" : e.enviado ? "Admitido; pendiente de inicio o recursos"
                         : e.versionBloqueada == version ? "Recursos insuficientes"
                         : "Esperando turno o trabajador";
                 Long prioridad = politica == PoliticaPlanificacion.AGING
@@ -151,7 +248,7 @@ public final class ProcesadorPedidos implements AutoCloseable {
                         marcarError(e, e.corrida == corrida ? ahora : e.ultimoInstante, "Simulación detenida");
                         inventario.cancelarReserva(e.pedido.id());
                         recursos.cancelarEspera(e.operacion());
-                        if (!e.iniciado) cancelados.add(e.resultado);
+                        cancelados.add(e.resultado);
                     }
                 }
                 // Se prueban reservas completas en el orden de la política; los pedidos sin stock no bloquean a otros.
@@ -162,6 +259,7 @@ public final class ProcesadorPedidos implements AutoCloseable {
                 }
                 siguiente = estadoMotor != EstadoSimulacion.EJECUTANDO ? null : ejecuciones.values().stream()
                         .filter(e -> e.corrida == corrida && e.estado == EstadoPedido.ESPERANDO_RECURSOS && !e.enviado
+                                && !(e.conflicto && e.plan.pasos().get(e.completados).etapa() == EtapaPedido.DESPACHO)
                                 && e.versionBloqueada != version)
                         .min((a, b) -> comparador.compare(candidato(a, ahora), candidato(b, ahora))).orElse(null);
                 if (siguiente != null) siguiente.enviado = true;
@@ -243,6 +341,7 @@ public final class ProcesadorPedidos implements AutoCloseable {
             if (completado != null) e.resultado.complete(completado);
             if (error != null) e.resultado.completeExceptionally(new IllegalStateException(error));
             aviso.release();
+            avisarExternos();
         }
     }
 
@@ -297,6 +396,7 @@ public final class ProcesadorPedidos implements AutoCloseable {
         int completados;
         boolean enviado;
         boolean iniciado;
+        boolean conflicto;
         long versionBloqueada = -1;
         long inicioPaso;
         final long llegada;

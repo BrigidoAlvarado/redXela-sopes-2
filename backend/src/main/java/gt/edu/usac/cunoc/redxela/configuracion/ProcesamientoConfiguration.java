@@ -9,6 +9,9 @@ import org.springframework.context.annotation.Configuration;
 import gt.edu.usac.cunoc.redxela.catalogo.CatalogoProductos;
 import gt.edu.usac.cunoc.redxela.inventario.InventarioService;
 import gt.edu.usac.cunoc.redxela.recepcion.RecepcionService;
+import gt.edu.usac.cunoc.redxela.conflicto.DemostracionDeadlock;
+import gt.edu.usac.cunoc.redxela.pedidos.GeneradorPedidos;
+import gt.edu.usac.cunoc.redxela.clientes.ClienteService;
 
 @Configuration(proxyBeanMethods = false)
 public class ProcesamientoConfiguration {
@@ -22,5 +25,16 @@ public class ProcesamientoConfiguration {
     @Bean(destroyMethod = "close")
     RecepcionService recepcionService(CatalogoProductos catalogo, InventarioService inventario, GestorRecursos recursos, MotorSimulacion motor) {
         return new RecepcionService(catalogo, inventario, recursos, motor, 100);
+    }
+
+    @Bean(destroyMethod = "close")
+    GeneradorPedidos generadorPedidos(ClienteService clientes, PedidoService pedidos, ProcesadorPedidos procesador,
+                                       CatalogoProductos catalogo, MotorSimulacion motor) {
+        return new GeneradorPedidos(clientes, pedidos, procesador, catalogo, motor);
+    }
+
+    @Bean(destroyMethod = "close")
+    DemostracionDeadlock demostracionDeadlock(MotorSimulacion motor, ProcesadorPedidos procesador, GestorRecursos recursos) {
+        return new DemostracionDeadlock(motor, procesador, recursos);
     }
 }
